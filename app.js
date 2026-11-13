@@ -330,14 +330,104 @@ function hwAfficher() {
     <div class="row" style="margin-top:8px"><span style="font-size:14px">Bilan sur la période</span><b>${imp >= exp ? 'vous consommez ' + fr(imp - exp, 0) + ' kWh de plus' : 'vous produisez ' + fr(exp - imp, 0) + ' kWh de trop'}</b></div>
     <div class="row"><span style="font-size:14px">Soleil renvoyé = km possibles</span><b>≈ ${fr(exp * 1000 / P.wh, 0)} km</b></div>
     <div class="row"><span style="font-size:14px">Gain si ce soleil allait dans la Tesla</span><b style="color:var(--ok)">jusqu'à ${eur(gainMax)}</b></div>`;
-  const ks = Object.keys(mois).sort().slice(-12);
-  const max = Math.max(...ks.map(k => Math.max(mois[k].imp, mois[k].exp)), 1);
-  $('#hwGraph').innerHTML = `<div style="display:flex;gap:12px;font-size:12px;margin-bottom:6px" class="mut"><span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--acc)"></i> Pris</span><span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--warn)"></i> Renvoyé</span></div>
-    <div style="display:flex;align-items:flex-end;gap:6px;height:120px">${ks.map(k => `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%;justify-content:flex-end">
-      <div style="display:flex;gap:2px;align-items:flex-end;height:100%;width:100%;justify-content:center">
-        <div title="${fr(mois[k].imp, 0)} kWh" style="width:45%;background:var(--acc);border-radius:3px 3px 0 0;height:${mois[k].imp / max * 100}%"></div>
-        <div title="${fr(mois[k].exp, 0)} kWh" style="width:45%;background:var(--warn);border-radius:3px 3px 0 0;height:${mois[k].exp / max * 100}%"></div></div>
-      <span class="mut" style="font-size:10px">${new Date(k + '-01').toLocaleDateString('fr-FR', { month: 'short' }).replace('.', '')}</span></div>`).join('')}</div>`;
+  hwGraphe();
+}
+
+// ---------- Graphique interactif : mois → jours → heures ----------
+const VUE = { niveau: 'mois', mois: null, jour: null, sel: null };
+const pad = n => String(n).padStart(2, '0');
+const cleJour = d => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+const cleMois = d => d.getFullYear() + '-' + pad(d.getMonth() + 1);
+function grouper(iv, cle) {
+  const g = {}; iv.forEach(x => { const k = cle(new Date(x.a)); (g[k] = g[k] || { imp: 0, exp: 0 }); g[k].imp += x.imp; g[k].exp += x.exp; }); return g;
+}
+function barres(g, ks, lib, sel) {
+  const max = Math.max(...ks.map(k => Math.max(g[k].imp, g[k].exp)), 0.001);
+  const etroit = ks.length > 16;
+  return `<div style="display:flex;align-items:flex-end;gap:${etroit ? 1 : 5}px;height:140px;touch-action:pan-y">${ks.map(k => `
+    <div data-k="${k}" style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%;justify-content:flex-end;cursor:pointer;border-radius:6px;padding:2px 0;${k === sel ? 'background:#ffffff14' : ''}">
+      <div style="display:flex;gap:1px;align-items:flex-end;height:100%;width:100%;justify-content:center;pointer-events:none">
+        <div style="width:46%;background:var(--acc);border-radius:2px 2px 0 0;height:${g[k].imp / max * 100}%;opacity:${sel && k !== sel ? .45 : 1}"></div>
+        <div style="width:46%;background:var(--warn);border-radius:2px 2px 0 0;height:${g[k].exp / max * 100}%;opacity:${sel && k !== sel ? .45 : 1}"></div></div>
+      <span class="mut" style="font-size:${etroit ? 8 : 10}px;pointer-events:none;white-space:nowrap">${lib(k)}</span></div>`).join('')}</div>`;
+}
+function detail(titre, d, extra = '') {
+  const net = d.imp - d.exp;
+  return `<div class="card" style="background:var(--card2);margin-top:12px">
+    <div style="font-weight:600;margin-bottom:6px">${titre}</div>
+    <div class="row"><span>🔵 Pris au réseau (in)</span><b>${fr(d.imp, d.imp < 10 ? 2 : 1)} kWh</b></div>
+    <div class="row"><span>🟠 Renvoyé au réseau (out)</span><b style="color:var(--warn)">${fr(d.exp, d.exp < 10 ? 2 : 1)} kWh</b></div>
+    <div class="row"><span>Bilan</span><b>${net >= 0 ? '+' : '−'}${fr(Math.abs(net), 1)} kWh ${net >= 0 ? 'pris' : 'renvoyé'}</b></div>
+    <div class="row"><span>Soleil renvoyé = km possibles</span><b>≈ ${fr(d.exp * 1000 / P.wh, 0)} km</b></div>${extra}</div>`;
+}
+function hwGraphe() {
+  const iv = intervalles(); if (!iv.length) return;
+  const res = resolutionMin();
+  const fin = new Date(iv[iv.length - 1].a);
+  let h = `<div style="display:flex;gap:12px;font-size:12px;margin-bottom:8px;align-items:center" class="mut">
+    <span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--acc)"></i> Pris (in)</span>
+    <span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--warn)"></i> Renvoyé (out)</span>
+    <input type="date" id="hwDate" min="${cleJour(new Date(iv[0].a))}" max="${cleJour(fin)}" value="${VUE.jour || ''}" style="margin-left:auto;background:var(--card2);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:5px;font:13px Inter,sans-serif;max-width:140px"></div>`;
+  let nav = '';
+  if (VUE.niveau === 'mois') {
+    const g = grouper(iv, cleMois), ks = Object.keys(g).sort().slice(-12);
+    h += barres(g, ks, k => new Date(k + '-01T12:00').toLocaleDateString('fr-FR', { month: 'short' }).replace('.', ''), VUE.sel);
+    h += VUE.sel && g[VUE.sel] ? detail(new Date(VUE.sel + '-01T12:00').toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }), g[VUE.sel], `<button class="btn sec" data-go="jours">Voir les jours de ce mois →</button>`)
+      : '<div class="mut" style="font-size:13px;margin-top:8px">Touchez un mois pour voir le détail, ou choisissez une date.</div>';
+  } else if (VUE.niveau === 'jours') {
+    const ivm = iv.filter(x => cleMois(new Date(x.a)) === VUE.mois);
+    const g = grouper(ivm, cleJour), ks = Object.keys(g).sort();
+    nav = `<button class="btn sec" data-go="mois" style="margin:0 0 10px;padding:9px">← Tous les mois · ${new Date(VUE.mois + '-01T12:00').toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}</button>`;
+    h += barres(g, ks, k => +k.slice(8) % (ks.length > 16 ? 5 : 1) === 0 || k.slice(8) === '01' ? String(+k.slice(8)) : '', VUE.jour);
+    if (VUE.jour && g[VUE.jour]) {
+      const dj = new Date(VUE.jour + 'T12:00');
+      let extra = '';
+      if (res <= 60) extra += '<div style="margin-top:10px" class="mut">Heure par heure</div>' + heures(iv, VUE.jour);
+      extra += '<div id="hwCharges" style="margin-top:10px"></div>';
+      h += detail(dj.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }), g[VUE.jour], extra);
+    } else h += '<div class="mut" style="font-size:13px;margin-top:8px">Touchez un jour pour voir le détail.</div>';
+  }
+  $('#hwGraph').innerHTML = nav + h;
+  $('#hwGraph').querySelectorAll('[data-k]').forEach(el => el.onclick = () => {
+    const k = el.dataset.k;
+    if (VUE.niveau === 'mois') VUE.sel = VUE.sel === k ? null : k; else VUE.jour = k;
+    hwGraphe();
+  });
+  $('#hwGraph').querySelectorAll('[data-go]').forEach(el => el.onclick = () => {
+    if (el.dataset.go === 'jours') { VUE.niveau = 'jours'; VUE.mois = VUE.sel; VUE.jour = null; }
+    else { VUE.niveau = 'mois'; VUE.sel = VUE.mois; VUE.jour = null; }
+    hwGraphe();
+  });
+  $('#hwDate').onchange = e => { const v = e.target.value; if (!v) return; VUE.niveau = 'jours'; VUE.mois = v.slice(0, 7); VUE.jour = v; VUE.sel = VUE.mois; hwGraphe(); };
+  if (VUE.niveau === 'jours' && VUE.jour) chargesDuJour(VUE.jour);
+}
+function heures(iv, jour) {
+  const g = {}; for (let i = 0; i < 24; i++) g[pad(i)] = { imp: 0, exp: 0 };
+  iv.filter(x => cleJour(new Date(x.a)) === jour).forEach(x => { const k = pad(new Date(x.a).getHours()); g[k].imp += x.imp; g[k].exp += x.exp; });
+  return barres(g, Object.keys(g), k => +k % 6 === 0 ? k + 'h' : '', null).replace('height:140px', 'height:90px');
+}
+const cacheCh = {};
+async function chargesDuJour(jour) {
+  const box = $('#hwCharges'); if (!box) return;
+  if (!live()) { box.innerHTML = '<div class="mut" style="font-size:13px">Connectez Tessie pour voir les recharges de ce jour.</div>'; return; }
+  box.innerHTML = '<div class="mut" style="font-size:13px">Recharges de la Tesla…</div>';
+  try {
+    if (!cacheCh[jour]) {
+      const a = Math.floor(new Date(jour + 'T00:00') / 1000), b = a + 86400;
+      const d = await api(`/${VIN}/charges?from=${a}&to=${b}&distance_format=km&format=json&superchargers_only=false`);
+      cacheCh[jour] = d.results || [];
+    }
+    const list = cacheCh[jour];
+    if ($('#hwCharges') !== box) return;
+    box.innerHTML = list.length ? '<div class="mut" style="margin-bottom:4px">Recharges de la Tesla ce jour-là</div>' + list.map(c => {
+      const deb = new Date(c.started_at * 1000), fin = c.ended_at ? new Date(c.ended_at * 1000) : null;
+      const kwh = c.energy_used ?? c.energy_added ?? 0, dom = estDomicile(c);
+      const res = dom ? partReseau(deb.getTime(), fin && fin.getTime(), kwh) : null;
+      const hh = d => d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+      const info = !dom ? 'hors domicile' : res != null ? `☀️ ${Math.round((kwh - res) / Math.max(kwh, 0.01) * 100)} % solaire (mesuré)` : (deb.getHours() >= 9 && deb.getHours() < 16 ? '☀️ journée (estimé)' : '🌙 soir/nuit (estimé)');
+      return `<div class="row"><div><div>${hh(deb)}${fin ? ' → ' + hh(fin) : ''}</div><div class="mut">${info}</div></div><b>${fr(kwh, 1)} kWh</b></div>`;
+    }).join('') : '<div class="mut" style="font-size:13px">Pas de recharge de la Tesla ce jour-là.</div>';
+  } catch (e) { box.innerHTML = '<div class="mut" style="font-size:13px">Recharges indisponibles : ' + msgErreur(e) + '</div>'; }
 }
 $('#hwFile').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
