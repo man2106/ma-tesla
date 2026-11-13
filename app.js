@@ -255,6 +255,102 @@ function choisir(vin) {
 }
 $('#dx').onclick = () => { TOKEN = ''; VIN = ''; store.set('token', ''); store.set('vin', ''); connexionUI(); toast('Déconnectée'); };
 
+
+// ---------- Gains et rentabilité ----------
+const P_DEF = { essence: 1.905, conso: 7, solaire: 0.20, reseau: 0.43, wh: 175, achat: '', surcout: 0, entretien: 300 };
+const P = Object.assign({}, P_DEF, store.get('prix', {}));
+const PL = [
+  ['essence', 'Prix de l\'essence (€/L)', 0.001], ['conso', 'Conso. voiture essence (L/100 km)', 0.1],
+  ['solaire', 'kWh solaire (€)', 0.01], ['reseau', 'kWh réseau, tout compris (€)', 0.01],
+  ['wh', 'Conso. Tesla si inconnue (Wh/km)', 1], ['achat', 'Date d\'achat de la Tesla', 'date'],
+  ['surcout', 'Surcoût à l\'achat vs essence (€)', 1], ['entretien', 'Entretien économisé par an (€)', 1]];
+function paramsUI() {
+  $('#gParams').innerHTML = PL.map(([k, l, st]) => `<div class="row"><span style="font-size:14px">${l}</span><input data-p="${k}" type="${st === 'date' ? 'date' : 'number'}" ${st !== 'date' ? 'step="' + st + '" inputmode="decimal"' : ''} value="${P[k]}" style="width:${st === 'date' ? 140 : 90}px;text-align:right;background:var(--card2);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:8px;font:15px Inter,sans-serif"></div>`).join('');
+  $('#gParams').onchange = e => { const k = e.target.dataset.p; if (!k) return; P[k] = e.target.type === 'date' ? e.target.value : +String(e.target.value).replace(',', '.'); store.set('prix', P); gains(); };
+}
+const eur = n => fr(n, n >= 1000 ? 0 : 2).replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' €';
+function bornes() {
+  const now = new Date(), to = Math.floor(now / 1000);
+  const v = $('#periode').value;
+  if (v === 'mois') return [Math.floor(new Date(now.getFullYear(), now.getMonth(), 1) / 1000), to];
+  if (v === '12m') return [to - 365 * 86400, to];
+  const d = P.achat ? Math.floor(new Date(P.achat) / 1000) : to - 3 * 365 * 86400;
+  return [d, to];
+}
+function estDomicile(c) {
+  if (c.is_supercharger || /supercharg/i.test(c.location || '')) return false;
+  if (c.is_fast_charger) return false;
+  const ici = L.find(l => l[3] != null && c.latitude != null && distance(c.latitude, c.longitude, l[3], l[4]) < 250);
+  if (ici) return /domicile|maison/i.test(ici[1]);
+  return /home|domicile|maison/i.test((c.saved_location || '') + ' ' + (c.location || ''));
+}
+function analyser(charges, drives) {
+  let solKwh = 0, resKwh = 0, autreKwh = 0, autreEur = 0, km = 0;
+  charges.forEach(c => {
+    const kwh = c.energy_used ?? c.energy_added ?? 0;
+    if (estDomicile(c)) {
+      const h = new Date((c.started_at || 0) * 1000).getHours();
+      if (h >= 9 && h < 16) solKwh += kwh; else resKwh += kwh;
+    } else { autreKwh += kwh; autreEur += c.cost ?? 0; }
+  });
+  drives.forEach(d => { km += d.odometer_distance ?? d.distance ?? 0; });
+  const elec = solKwh * P.solaire + resKwh * P.reseau + autreEur;
+  const kwhTot = solKwh + resKwh + autreKwh;
+  if (!km && kwhTot) km = kwhTot * 1000 / P.wh;
+  const ess = km * P.conso / 100 * P.essence;
+  return { solKwh, resKwh, autreKwh, autreEur, km, elec, ess, kwhTot };
+}
+function demoDonnees() {
+  const r = { solKwh: 96, resKwh: 58, autreKwh: 52, autreEur: 33.68, km: 1180 };
+  r.kwhTot = r.solKwh + r.resKwh + r.autreKwh;
+  r.elec = r.solKwh * P.solaire + r.resKwh * P.reseau + r.autreEur;
+  r.ess = r.km * P.conso / 100 * P.essence; return r;
+}
+let gEnCours = false;
+async function gains() {
+  if (gEnCours) return; gEnCours = true;
+  let r;
+  try {
+    if (live()) {
+      $('#gTotal').textContent = '…';
+      const [a, b] = bornes();
+      const [c, d] = await Promise.all([
+        api(`/${VIN}/charges?from=${a}&to=${b}&distance_format=km&format=json&superchargers_only=false`),
+        api(`/${VIN}/drives?from=${a}&to=${b}&distance_format=km&format=json`)]);
+      r = analyser(c.results || [], d.results || []);
+    } else r = demoDonnees();
+  } catch (e) { $('#gTotal').textContent = '—'; $('#gKm').textContent = 'Données indisponibles : ' + msgErreur(e); gEnCours = false; return; }
+  gEnCours = false;
+  const gain = r.ess - r.elec;
+  $('#gTotal').textContent = eur(gain);
+  $('#gKm').textContent = fr(r.km, 0) + ' km parcourus' + (live() ? '' : ' (exemple)');
+  $('#gElec').textContent = eur(r.elec); $('#gEss').textContent = eur(r.ess);
+  $('#g100').textContent = r.km ? fr(r.elec / r.km * 100, 2) + ' €' : '—';
+  $('#gSol').textContent = r.kwhTot ? Math.round(r.solKwh / r.kwhTot * 100) + ' %' : '—';
+  const lig = (t, k, e, col) => `<div class="row"><div><div>${t}</div><div class="mut">${fr(k, 0)} kWh</div></div><b style="color:${col}">${eur(e)}</b></div>`;
+  $('#gRep').innerHTML = lig('☀️ Soleil (domicile, journée)', r.solKwh, r.solKwh * P.solaire, 'var(--ok)')
+    + lig('🌙 Réseau (domicile, soir/nuit)', r.resKwh, r.resKwh * P.reseau, 'var(--warn)')
+    + lig('⚡ Superchargeurs et bornes', r.autreKwh, r.autreEur, 'var(--txt)');
+  // rentabilité
+  const [a, b] = bornes(); const jours = Math.max(1, (b - a) / 86400);
+  const parAn = gain / jours * 365 + (+P.entretien || 0);
+  let rent = `<div class="row"><span>Économie estimée par an</span><b style="color:var(--ok)">${eur(parAn)}</b></div>`;
+  if (+P.surcout > 0 && parAn > 0) {
+    const ans = P.surcout / parAn;
+    const debut = P.achat ? new Date(P.achat) : null;
+    const fin = debut ? new Date(debut.getTime() + ans * 365 * 86400000) : null;
+    rent += `<div class="row"><span>Surcoût remboursé en</span><b>${fr(ans, 1)} ans</b></div>`;
+    if (fin) rent += `<div class="row"><span>Rentable à partir de</span><b>${fin.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}</b></div>`;
+  } else rent += '<div class="mut" style="padding-top:8px">Indiquez le surcoût à l\'achat dans « Mes prix » pour voir quand la Tesla sera rentable.</div>';
+  $('#gRent').innerHTML = rent;
+  // conseil
+  const gainPossible = r.resKwh * (P.reseau - P.solaire);
+  $('#gConseil').innerHTML = r.resKwh > 0
+    ? `En chargeant au soleil ce que vous avez chargé le soir sur cette période, vous auriez économisé <b>${eur(gainPossible)}</b> de plus. Branchez la voiture en journée dès que vous êtes à la maison et que le soleil brille.`
+    : 'Bravo : toutes vos recharges à domicile se font déjà au soleil.';
+}
+$('#periode').onchange = gains;
+
 // ---------- Démo : historique fictif ----------
 function histoDemo() {
   const H = [['Domicile', '11 nov.', '38', '6,84'], ['Superchargeur Lyon', '8 nov.', '52', '21,32'], ['Domicile', '5 nov.', '41', '7,38'], ['Travail', '3 nov.', '30', '0,00'], ['Superchargeur Mâcon', '1 nov.', '25', '12,36']];
@@ -264,17 +360,17 @@ function histoDemo() {
 // ---------- Navigation ----------
 function go() {
   const v = (location.hash || '#accueil').slice(1);
-  const ok = ['accueil', 'charge', 'carte', 'reglages'].includes(v) ? v : 'accueil';
+  const ok = ['accueil', 'charge', 'gains', 'carte', 'reglages'].includes(v) ? v : 'accueil';
   document.querySelectorAll('.view').forEach(s => s.classList.toggle('act', s.id === 'v-' + ok));
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('act', a.dataset.v === ok));
   window.scrollTo(0, 0);
 }
-addEventListener('hashchange', go);
+addEventListener('hashchange', () => { go(); if (location.hash === '#gains') gains(); });
 
 function toutAfficher() { tuiles(); etat(); clim(); lim(); batterie(); carte(); }
 function toutCharger() { charger(); chargerMeteo(); chargerHistorique(); }
 
-toutAfficher(); lieux(); connexionUI(); go();
+toutAfficher(); lieux(); connexionUI(); paramsUI(); go(); if (location.hash === '#gains') gains();
 if (live()) toutCharger(); else histoDemo();
 setInterval(() => { if (live() && !document.hidden) charger(); }, 60000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && live()) charger(); });

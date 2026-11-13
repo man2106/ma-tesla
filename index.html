@@ -41,7 +41,7 @@ input[type=range]{width:100%;accent-color:var(--acc)}
 .stepper{display:flex;align-items:center;gap:14px}
 .stepper button{width:40px;height:40px;border-radius:50%;border:1px solid var(--line);background:var(--card2);color:var(--txt);font-size:22px}
 .nav{position:fixed;left:0;right:0;bottom:0;background:#0f1013ee;backdrop-filter:blur(12px);border-top:1px solid var(--line);display:flex;justify-content:space-around;padding:8px 0 calc(env(safe-area-inset-bottom) + 8px)}
-.nav a{color:var(--mut);text-decoration:none;font-size:11px;display:flex;flex-direction:column;align-items:center;gap:3px;width:25%}
+.nav a{color:var(--mut);text-decoration:none;font-size:11px;display:flex;flex-direction:column;align-items:center;gap:3px;width:20%}
 .nav a.act{color:var(--txt)}
 .nav svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .view{display:none}.view.act{display:block}
@@ -171,11 +171,40 @@ input[type=range]{width:100%;accent-color:var(--acc)}
   </div>
 </section>
 
+
+<!-- GAINS -->
+<section class="view" id="v-gains">
+  <div class="top"><h1>Gains</h1>
+    <select id="periode" style="background:var(--card2);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:8px">
+      <option value="mois">Ce mois</option><option value="12m">12 mois</option><option value="tout">Depuis l'achat</option></select></div>
+  <div class="card" style="margin-top:16px;text-align:center">
+    <div class="mut">Économisé par rapport à l'essence</div>
+    <div class="big" style="color:var(--ok);margin:8px 0" id="gTotal">—</div>
+    <div class="mut" id="gKm">—</div>
+  </div>
+  <div class="stat" style="margin-top:10px">
+    <div class="card"><span class="mut">Coût électrique</span><b id="gElec">—</b></div>
+    <div class="card"><span class="mut">Même trajet en essence</span><b id="gEss">—</b></div>
+    <div class="card"><span class="mut">Coût aux 100 km</span><b id="g100">—</b></div>
+    <div class="card"><span class="mut">Part solaire</span><b id="gSol">—</b></div>
+  </div>
+  <h2>D'où vient l'énergie</h2>
+  <div class="card" id="gRep"></div>
+  <h2>Rentabilité</h2>
+  <div class="card" id="gRent"></div>
+  <h2>Conseil</h2>
+  <div class="card" id="gConseil" style="font-size:14px;line-height:1.5"></div>
+  <h2>Mes prix</h2>
+  <div class="card" id="gParams"></div>
+  <div class="mut" style="font-size:12px;margin-top:10px;line-height:1.5">Les recharges à domicile commencées entre 9 h et 16 h sont comptées comme solaires. Les prix des Superchargeurs viennent de vos vraies factures.</div>
+</section>
+
 <div class="toast" id="toast"></div>
 
 <nav class="nav">
   <a href="#accueil" class="act" data-v="accueil"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Accueil</a>
   <a href="#charge" data-v="charge"><svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>Charge</a>
+  <a href="#gains" data-v="gains"><svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>Gains</a>
   <a href="#carte" data-v="carte"><svg viewBox="0 0 24 24"><path d="M12 21s-7-6.5-7-12a7 7 0 0 1 14 0c0 5.5-7 12-7 12z"/><circle cx="12" cy="9" r="2.5"/></svg>Carte</a>
   <a href="#reglages" data-v="reglages"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Réglages</a>
 </nav>
