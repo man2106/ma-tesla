@@ -697,7 +697,68 @@ async function temperature() {
   } else $('#tDetail').textContent = 'Touchez un point pour voir le trajet.';
 }
 
-$('#periode').onchange = gains;
+// ---------- Pertes à l'arrêt (veille, Sentinelle, climatisation) ----------
+let pSel = null;
+function idlesDemo(a, b) {
+  const r = [];
+  for (let t = a; t < b; t += 86400) {
+    const sent = Math.random() < .5 ? .3 + Math.random() * .6 : 0, clim = Math.random() < .15 ? .2 : 0;
+    r.push({ started_at: t + 3600 * 19, ended_at: t + 3600 * 31, energy_used: .25 + sent * 2.6 + clim * 3 + Math.random() * .3, sentry_fraction: sent, climate_fraction: clim });
+  }
+  return r;
+}
+async function pertes() {
+  const [a, b] = bornes();
+  let list;
+  try { list = live() ? ((await api(`/${VIN}/idles?from=${a}&to=${b}&format=json`)).results || []) : idlesDemo(a, b); }
+  catch (e) { $('#pResume').textContent = 'Données indisponibles : ' + msgErreur(e); return; }
+  let tot = 0, sen = 0, cli = 0, h = 0;
+  const parJour = {};
+  list.forEach(x => {
+    const e = Math.max(0, x.energy_used ?? ((x.starting_battery - x.ending_battery) / 100 * P.batt) ?? 0);
+    const fs = Math.min(1, x.sentry_fraction || 0), fc = Math.min(1 - fs, x.climate_fraction || 0);
+    // part de l'énergie : on répartit en supposant ~2,5 kW·h/jour de Sentinelle contre ~0,3 en veille
+    const ps = fs ? Math.min(e, e * fs * 8 / (fs * 8 + fc * 10 + (1 - fs - fc))) : 0;
+    const pc = fc ? Math.min(e - ps, e * fc * 10 / (fs * 8 + fc * 10 + (1 - fs - fc))) : 0;
+    tot += e; sen += ps; cli += pc; h += ((x.ended_at || 0) - (x.started_at || 0)) / 3600;
+    const k = cleJour(new Date((x.started_at || 0) * 1000));
+    (parJour[k] = parJour[k] || { e: 0, s: 0, c: 0, h: 0 }); parJour[k].e += e; parJour[k].s += ps; parJour[k].c += pc; parJour[k].h += ((x.ended_at || 0) - (x.started_at || 0)) / 3600;
+  });
+  const veille = Math.max(0, tot - sen - cli), jours = Math.max(1, (b - a) / 86400);
+  const prix = P.reseau, an = tot / jours * 365;
+  if (!list.length) { $('#pResume').textContent = 'Aucune période à l\'arrêt enregistrée sur cette période.'; $('#pGraph').innerHTML = ''; return; }
+  const ligne = (ic, t, k, c) => `<div class="row"><span>${ic} ${t}</span><span><b style="color:${c}">${fr(k, 1)} kWh</b> <span class="mut">· ${eur(k * prix)}</span></span></div>`;
+  let html = `<div class="stat">
+    <div class="card" style="background:var(--card2)"><span class="mut">Perdu garée</span><b>${fr(tot, 1)} kWh</b></div>
+    <div class="card" style="background:var(--card2)"><span class="mut">Soit</span><b>${eur(tot * prix)}</b></div>
+    <div class="card" style="background:var(--card2)"><span class="mut">Par jour</span><b>${fr(tot / jours, 2)} kWh</b></div>
+    <div class="card" style="background:var(--card2)"><span class="mut">Sur un an</span><b>≈ ${eur(an * prix)}</b></div></div>
+    <div style="margin-top:8px">${ligne('🛡️', 'Sentinelle', sen, '#ff5b5b')}${ligne('❄️', 'Climatisation à l\'arrêt', cli, '#6fb6ff')}${ligne('💤', 'Veille normale', veille, 'var(--mut)')}</div>`;
+  const pct = tot ? sen / tot : 0;
+  html += `<div style="margin-top:10px;font-size:14px;line-height:1.45;color:var(--txt)">${pct > .35 ? `💡 La Sentinelle représente <b>${Math.round(pct * 100)} %</b> des pertes. La couper à la maison ferait gagner environ <b>${eur(sen / jours * 365 * prix * .6)}</b> par an. L'option « Sauf à la maison » des Réglages le fait déjà quand l'application est ouverte.` : tot / jours > 1 ? '💡 Les pertes sont élevées : vérifiez qu\'aucune application ne réveille la voiture trop souvent (par exemple TeslaFi et Tessie en même temps).' : '👍 Vos pertes à l\'arrêt sont faibles.'}</div>`;
+  html += `<div class="mut" style="font-size:12px;margin-top:6px">Prix compté : ${fr(prix, 2)} €/kWh (réseau). ${live() ? '' : 'Données d\'exemple.'} Le partage entre Sentinelle, climatisation et veille est estimé.</div>`;
+  $('#pResume').innerHTML = html;
+  // graphique empilé par jour (ou par semaine si la période est longue)
+  let ks = Object.keys(parJour).sort(), G = parJour, lib = k => +k.slice(8) % 5 === 0 || k.slice(8) === '01' ? String(+k.slice(8)) : '';
+  if (ks.length > 45) {
+    G = {}; ks.forEach(k => { const d = new Date(k + 'T12:00'); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); const w = cleJour(d); (G[w] = G[w] || { e: 0, s: 0, c: 0, h: 0 }); ['e', 's', 'c', 'h'].forEach(f => G[w][f] += parJour[k][f]); });
+    ks = Object.keys(G).sort(); lib = k => +k.slice(8) <= 7 ? new Date(k + 'T12:00').toLocaleDateString('fr-FR', { month: 'short' }).replace('.', '') : '';
+  }
+  const max = Math.max(...ks.map(k => G[k].e), .1);
+  $('#pGraph').innerHTML = `<div style="display:flex;align-items:flex-end;gap:${ks.length > 20 ? 1 : 4}px;height:120px">${ks.map(k => {
+    const x = G[k], z = v => (v / max * 100).toFixed(1) + 'px';
+    return `<div data-p="${k}" style="flex:1;min-width:0;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:3px;cursor:pointer;border-radius:4px;${pSel === k ? 'background:#ffffff14' : ''}">
+      <div style="width:80%;display:flex;flex-direction:column;pointer-events:none"><div style="height:${z(x.s)};background:#ff5b5b;border-radius:2px 2px 0 0"></div><div style="height:${z(x.c)};background:#6fb6ff"></div><div style="height:${z(Math.max(0, x.e - x.s - x.c))};background:#5c636e"></div></div>
+      <span class="mut" style="font-size:9px;height:12px;white-space:nowrap;pointer-events:none">${lib(k)}</span></div>`; }).join('')}</div>
+    <div class="mut" style="font-size:11px;margin-top:6px;display:flex;gap:10px"><span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#ff5b5b"></i> Sentinelle</span><span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#6fb6ff"></i> Climatisation</span><span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#5c636e"></i> Veille</span></div>`;
+  $('#pGraph').querySelectorAll('[data-p]').forEach(el => el.onclick = () => { pSel = el.dataset.p; pertes(); });
+  if (pSel && G[pSel]) {
+    const x = G[pSel], d = new Date(pSel + 'T12:00');
+    $('#pDetail').innerHTML = `<b style="color:var(--txt)">${ks.length && G !== parJour ? 'Semaine du ' : ''}${d.toLocaleDateString('fr-FR', { weekday: G === parJour ? 'long' : undefined, day: 'numeric', month: 'long' })}</b> · ${fr(x.h, 0)} h garée · ${fr(x.e, 2)} kWh perdus (${eur(x.e * prix)}) · Sentinelle ${fr(x.s, 2)} kWh · climatisation ${fr(x.c, 2)} kWh`;
+  } else $('#pDetail').textContent = 'Touchez une barre pour le détail.';
+}
+
+$('#periode').onchange = () => { gains(); pertes(); };
 hwAfficher();
 
 // ---------- Démo : historique fictif ----------
@@ -714,12 +775,12 @@ function go() {
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('act', a.dataset.v === ok));
   window.scrollTo(0, 0);
 }
-addEventListener('hashchange', () => { go(); if (location.hash === '#gains') { gains(); temperature(); } });
+addEventListener('hashchange', () => { go(); if (location.hash === '#gains') { gains(); temperature(); pertes(); } });
 
 function toutAfficher() { tuiles(); etat(); clim(); lim(); batterie(); carte(); }
 function toutCharger() { charger(); chargerMeteo(); chargerHistorique(); }
 
-toutAfficher(); lieux(); connexionUI(); paramsUI(); go(); if (location.hash === '#gains') { gains(); temperature(); }
+toutAfficher(); lieux(); connexionUI(); paramsUI(); go(); if (location.hash === '#gains') { gains(); temperature(); pertes(); }
 if (live()) toutCharger(); else histoDemo();
 setInterval(() => { if (live() && !document.hidden) charger(); }, 60000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && live()) charger(); });
