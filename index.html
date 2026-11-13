@@ -90,6 +90,7 @@ input[type=range]{width:100%;accent-color:var(--acc)}
     <div class="mut" style="margin-top:8px" id="limTxt">Limite de charge : 80 %</div>
   </div>
 
+  <div class="card" id="solAccueil" style="margin-top:12px;display:none;cursor:pointer" onclick="location.hash='#gains'"></div>
   <h2>Commandes</h2>
   <div class="grid" id="tuiles"></div>
 
@@ -167,7 +168,7 @@ input[type=range]{width:100%;accent-color:var(--acc)}
   </div>
   <h2>Application</h2>
   <div class="card">
-    <div class="row"><span>Version</span><b>6 · 13 nov.</b></div>
+    <div class="row"><span>Version</span><b>7 · 13 nov.</b></div>
     <button class="btn sec" id="maj">Mettre à jour l'application</button>
   </div>
   <h2>À propos</h2>
@@ -192,6 +193,13 @@ input[type=range]{width:100%;accent-color:var(--acc)}
     <div class="card"><span class="mut">Même trajet en essence</span><b id="gEss">—</b></div>
     <div class="card"><span class="mut">Coût aux 100 km</span><b id="g100">—</b></div>
     <div class="card"><span class="mut">Part solaire</span><b id="gSol">—</b></div>
+  </div>
+  <h2>☀️ Soleil prévu</h2>
+  <div class="card" id="solCard">
+    <div style="display:flex;gap:6px;margin-bottom:10px" id="solJours"></div>
+    <div id="solResume"></div>
+    <div id="solGraph" style="margin-top:12px"></div>
+    <div id="solDetail" class="mut" style="font-size:13px;margin-top:8px">Touchez une heure pour le détail.</div>
   </div>
   <h2>D'où vient l'énergie</h2>
   <div class="card" id="gRep"></div>
@@ -223,6 +231,6 @@ input[type=range]{width:100%;accent-color:var(--acc)}
   <a href="#reglages" data-v="reglages"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Réglages</a>
 </nav>
 
-<script src="app.js?v=6"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>

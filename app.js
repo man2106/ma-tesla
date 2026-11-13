@@ -441,16 +441,18 @@ $('#hwSuppr').onclick = e => {
 };
 
 // ---------- Gains et rentabilité ----------
-const P_DEF = { essence: 1.905, conso: 7, solaire: 0.20, reseau: 0.43, wh: 175, achat: '', surcout: 0, entretien: 300 };
+const P_DEF = { essence: 1.905, conso: 7, solaire: 0.20, reseau: 0.43, wh: 175, achat: '', surcout: 0, entretien: 300, kwc: 5, incl: 35, maison: 0.4, prise: 2.3 };
 const P = Object.assign({}, P_DEF, store.get('prix', {}));
 const PL = [
   ['essence', 'Prix de l\'essence (€/L)', 0.001], ['conso', 'Conso. voiture essence (L/100 km)', 0.1],
   ['solaire', 'kWh solaire (€)', 0.01], ['reseau', 'kWh réseau, tout compris (€)', 0.01],
   ['wh', 'Conso. Tesla si inconnue (Wh/km)', 1], ['achat', 'Date d\'achat de la Tesla', 'date'],
-  ['surcout', 'Surcoût à l\'achat vs essence (€)', 1], ['entretien', 'Entretien économisé par an (€)', 1]];
+  ['surcout', 'Surcoût à l\'achat vs essence (€)', 1], ['entretien', 'Entretien économisé par an (€)', 1],
+  ['kwc', 'Puissance des panneaux (kWc)', 0.1], ['incl', 'Inclinaison du toit (°)', 1],
+  ['maison', 'Conso. de la maison en journée (kW)', 0.1], ['prise', 'Puissance de charge sur la prise (kW)', 0.1]];
 function paramsUI() {
   $('#gParams').innerHTML = PL.map(([k, l, st]) => `<div class="row"><span style="font-size:14px">${l}</span><input data-p="${k}" type="${st === 'date' ? 'date' : 'number'}" ${st !== 'date' ? 'step="' + st + '" inputmode="decimal"' : ''} value="${P[k]}" style="width:${st === 'date' ? 140 : 90}px;text-align:right;background:var(--card2);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:8px;font:15px Inter,sans-serif"></div>`).join('');
-  $('#gParams').onchange = e => { const k = e.target.dataset.p; if (!k) return; P[k] = e.target.type === 'date' ? e.target.value : +String(e.target.value).replace(',', '.'); store.set('prix', P); gains(); if (typeof hwAfficher === 'function') hwAfficher(); };
+  $('#gParams').onchange = e => { const k = e.target.dataset.p; if (!k) return; P[k] = e.target.type === 'date' ? e.target.value : +String(e.target.value).replace(',', '.'); store.set('prix', P); gains(); if (typeof hwAfficher === 'function') hwAfficher(); if (['kwc', 'incl'].includes(k)) store.set('meteo', null); prevision(); };
 }
 const eur = n => fr(n, n >= 1000 ? 0 : 2).replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' €';
 function bornes() {
@@ -539,6 +541,88 @@ async function gains() {
     ? `En chargeant au soleil ce que vous avez chargé le soir sur cette période, vous auriez économisé <b>${eur(gainPossible)}</b> de plus. Branchez la voiture en journée dès que vous êtes à la maison et que le soleil brille.`
     : 'Bravo : toutes vos recharges à domicile se font déjà au soleil.';
 }
+
+// ---------- Prévision solaire (Open-Meteo, panneaux plein sud) ----------
+let SOL = null, solJour = 0, solHeure = null;
+function posMaison() {
+  const m = L.find(l => l[3] != null && /domicile|maison/i.test(l[1]));
+  if (m) return [m[3], m[4]];
+  if (S.lat != null) return [S.lat, S.lon];
+  return [50.41, 4.44]; // Hainaut (Charleroi) par défaut
+}
+async function prevision() {
+  try {
+    const [la, lo] = posMaison();
+    let c = store.get('meteo', null);
+    if (!c || Date.now() - c.t > 30 * 60000 || Math.abs(c.la - la) > 0.05) {
+      const u = `https://api.open-meteo.com/v1/forecast?latitude=${la.toFixed(3)}&longitude=${lo.toFixed(3)}&hourly=global_tilted_irradiance,cloud_cover,temperature_2m&tilt=${P.incl}&azimuth=0&timezone=Europe%2FBrussels&forecast_days=3`;
+      const r = await fetch(u); if (!r.ok) throw new Error('météo indisponible');
+      const d = await r.json(); c = { t: Date.now(), la, h: d.hourly }; store.set('meteo', c);
+    }
+    SOL = calculerSoleil(c.h); solAfficher();
+  } catch (e) { $('#solResume').innerHTML = '<div class="mut">Prévision indisponible : ' + msgErreur(e) + '</div>'; }
+}
+function calculerSoleil(h) {
+  const jours = {};
+  h.time.forEach((t, i) => {
+    // valeur moyenne sur l'heure précédente : 12:00 = de 11 h à 12 h
+    const fin = new Date(t), deb = new Date(fin.getTime() - 3600000), k = cleJour(deb);
+    const prod = Math.max(0, (h.global_tilted_irradiance[i] || 0) / 1000 * P.kwc * 0.8);
+    const surplus = Math.max(0, prod - P.maison);
+    const bon = surplus >= P.prise * 0.6;
+    const voiture = bon ? Math.min(surplus, P.prise) : 0;
+    (jours[k] = jours[k] || []).push({ h: deb.getHours(), prod, surplus, bon, voiture, nuage: h.cloud_cover[i], temp: h.temperature_2m[i] });
+  });
+  const auj = cleJour(new Date());
+  return Object.keys(jours).sort().filter(k => k >= auj && jours[k].length >= 20).slice(0, 3).map(k => {
+    const hs = jours[k];
+    let best = null, cur = null;
+    hs.forEach(x => { if (x.bon) { if (!cur) cur = { a: x.h, b: x.h + 1, kwh: 0 }; cur.b = x.h + 1; cur.kwh += x.voiture; if (!best || cur.kwh > best.kwh) best = { ...cur }; } else cur = null; });
+    const s = f => hs.reduce((a, x) => a + x[f], 0);
+    return { k, hs, prod: s('prod'), surplus: s('surplus'), voiture: s('voiture'), best };
+  });
+}
+function nomJour(i, k) { return i === 0 && k === cleJour(new Date()) ? 'Aujourd\'hui' : i <= 1 && k === cleJour(new Date(Date.now() + 86400000)) ? 'Demain' : new Date(k + 'T12:00').toLocaleDateString('fr-FR', { weekday: 'long' }); }
+function solAfficher() {
+  if (!SOL || !SOL.length) return;
+  const J = SOL[Math.min(solJour, SOL.length - 1)];
+  $('#solJours').innerHTML = SOL.map((d, i) => `<button data-j="${i}" class="pill" style="border:0;padding:7px 12px;font:13px Inter,sans-serif;cursor:pointer;${i === solJour ? 'background:var(--acc);color:#fff' : ''}">${nomJour(i, d.k)}</button>`).join('');
+  $('#solJours').querySelectorAll('[data-j]').forEach(b => b.onclick = () => { solJour = +b.dataset.j; solHeure = null; solAfficher(); });
+  const km = J.voiture * 1000 / P.wh, gain = J.voiture * (P.reseau - P.solaire);
+  const conseil = J.best ? `Branchez la Tesla de <b>${J.best.a} h à ${J.best.b} h</b>` : J.surplus > 1 ? 'Un peu de soleil, mais pas assez pour charger sur la prise sans prendre au réseau' : 'Pas assez de soleil pour charger : préférez une autre journée';
+  $('#solResume').innerHTML = `<div style="font-size:16px;line-height:1.4">${conseil}</div>
+    <div class="stat" style="margin-top:10px">
+      <div class="card" style="background:var(--card2)"><span class="mut">Production prévue</span><b>${fr(J.prod, 1)} kWh</b></div>
+      <div class="card" style="background:var(--card2)"><span class="mut">Soleil pour la Tesla</span><b style="color:var(--ok)">${fr(J.voiture, 1)} kWh</b></div>
+      <div class="card" style="background:var(--card2)"><span class="mut">Soit environ</span><b>${fr(km, 0)} km</b></div>
+      <div class="card" style="background:var(--card2)"><span class="mut">Gain vs charge le soir</span><b style="color:var(--ok)">${eur(gain)}</b></div></div>`;
+  const hs = J.hs.filter(x => x.h >= 6 && x.h <= 20);
+  const max = Math.max(...hs.map(x => x.prod), P.prise + P.maison, 0.5);
+  const lig = (P.maison + P.prise * 0.6) / max * 100;
+  $('#solGraph').innerHTML = `<div style="position:relative;height:120px;display:flex;align-items:flex-end;gap:3px">
+    <div style="position:absolute;left:0;right:0;bottom:${16 + lig}px;border-top:1px dashed var(--mut);opacity:.6;pointer-events:none"></div>
+    ${hs.map(x => `<div data-h="${x.h}" style="flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:3px;cursor:pointer;border-radius:5px;${solHeure === x.h ? 'background:#ffffff14' : ''}">
+      <div style="width:80%;border-radius:3px 3px 0 0;pointer-events:none;height:${x.prod / max * 100}px;min-height:1px;background:${x.bon ? 'var(--ok)' : x.prod > P.maison ? '#c9a227' : '#3a3f47'}"></div>
+      <span class="mut" style="font-size:9px;height:13px;pointer-events:none">${x.h % 3 === 0 ? x.h + 'h' : ''}</span></div>`).join('')}</div>
+    <div class="mut" style="font-size:11px;margin-top:6px;display:flex;gap:10px;flex-wrap:wrap"><span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--ok)"></i> idéal pour charger</span><span><i style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#c9a227"></i> surplus faible</span><span>- - - seuil prise + maison</span></div>`;
+  $('#solGraph').querySelectorAll('[data-h]').forEach(el => el.onclick = () => {
+    solHeure = +el.dataset.h; const x = J.hs.find(y => y.h === solHeure); solAfficher();
+    $('#solDetail').innerHTML = `<b style="color:var(--txt)">${x.h} h – ${x.h + 1} h</b> · production ${fr(x.prod, 2)} kWh · surplus ${fr(x.surplus, 2)} kWh · nuages ${Math.round(x.nuage)} % · ${Math.round(x.temp)} °C<br>${x.bon ? '✅ Bonne heure pour charger sur la prise' : x.surplus > 0 ? '⚠️ Surplus trop faible : la prise prendrait aussi du réseau' : '❌ Pas de surplus'}`;
+  });
+  if (solHeure == null) $('#solDetail').textContent = 'Touchez une heure pour le détail. Estimation pour des panneaux plein sud de ' + fr(P.kwc, 1) + ' kWc (modifiable dans « Mes prix »).';
+  // carte de l'accueil : aujourd'hui si la fenêtre n'est pas passée, sinon demain
+  const now = new Date().getHours();
+  const A = SOL[0] && SOL[0].best && SOL[0].best.b > now ? [SOL[0], 'Aujourd\'hui'] : SOL[1] ? [SOL[1], 'Demain'] : null;
+  const box = $('#solAccueil');
+  if (A) {
+    box.style.display = '';
+    box.innerHTML = A[0].best ? `<div style="display:flex;gap:12px;align-items:center"><span style="font-size:30px">☀️</span><div><div style="font-weight:600">${A[1]} : branchez de ${A[0].best.a} h à ${A[0].best.b} h</div><div class="mut">≈ ${fr(A[0].voiture, 1)} kWh de soleil · ${fr(A[0].voiture * 1000 / P.wh, 0)} km · ${eur(A[0].voiture * (P.reseau - P.solaire))} gagnés</div></div></div>`
+      : `<div style="display:flex;gap:12px;align-items:center"><span style="font-size:30px">☁️</span><div><div style="font-weight:600">${A[1]} : peu de soleil</div><div class="mut">Pas de bon moment pour charger au soleil</div></div></div>`;
+  }
+}
+prevision();
+setInterval(prevision, 30 * 60000);
+
 $('#periode').onchange = gains;
 hwAfficher();
 
