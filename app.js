@@ -415,7 +415,7 @@ async function chargesDuJour(jour) {
     if (!cacheCh[jour]) {
       const a = Math.floor(new Date(jour + 'T00:00') / 1000), b = a + 86400;
       const d = await api(`/${VIN}/charges?from=${a}&to=${b}&distance_format=km&format=json&superchargers_only=false`);
-      cacheCh[jour] = d.results || [];
+      cacheCh[jour] = fusion(d.results, HIST.charges, a, b);
     }
     const list = cacheCh[jour];
     if ($('#hwCharges') !== box) return;
@@ -440,8 +440,44 @@ $('#hwSuppr').onclick = e => {
   HW = []; store.set('hw', []); hwAfficher(); gains(); toast('Données du compteur effacées');
 };
 
+
+// ---------- Historique importé (TeslaFi compilé, sans GPS) ----------
+let HIST = store.get('hist', { drives: [], charges: [], idles: [], sources: [] });
+const aHist = () => HIST.drives.length + HIST.charges.length + HIST.idles.length > 0;
+function dansPeriode(l, a, b) { return l.filter(x => x.started_at >= a && x.started_at < b); }
+// ajoute les éléments importés qui ne chevauchent aucun élément Tessie
+function fusion(tessie, hist, a, b) {
+  const t = tessie || [], h = dansPeriode(hist || [], a, b);
+  const libre = x => !t.some(y => x.started_at < (y.ended_at || y.started_at) + 300 && (x.ended_at || x.started_at) > y.started_at - 300);
+  return t.concat(h.filter(libre)).sort((x, y) => x.started_at - y.started_at);
+}
+function histAfficher() {
+  const box = $('#histInfo'); if (!box) return;
+  if (!aHist()) { box.innerHTML = 'Aucun historique importé.'; $('#histSuppr').style.display = 'none'; return; }
+  const all = [...HIST.drives, ...HIST.charges, ...HIST.idles].map(x => x.started_at);
+  const f = t => new Date(t * 1000).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
+  box.innerHTML = `<b style="color:var(--txt)">${(HIST.sources || []).join(', ') || 'Historique'}</b> · du ${f(Math.min(...all))} au ${f(Math.max(...all))}<br>${HIST.drives.length} trajets · ${HIST.charges.length} recharges · ${HIST.idles.length} périodes à l'arrêt<br><span style="font-size:12px">Fusionné avec Tessie : quand les deux ont la même recharge ou le même trajet, celui de Tessie est gardé.</span>`;
+  $('#histSuppr').style.display = '';
+}
+function rafraichirTout() { TR = null; for (const k in cacheCh) delete cacheCh[k]; histAfficher(); gains(); temperature(); pertes(); }
+$('#histFile').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try {
+    const o = JSON.parse(await f.text());
+    if (!o || !Array.isArray(o.drives) || !Array.isArray(o.charges)) throw new Error('fichier non reconnu');
+    const mix = (a, b) => { const m = new Map(a.map(x => [x.started_at, x])); (b || []).forEach(x => m.set(x.started_at, x)); return [...m.values()].sort((x, y) => x.started_at - y.started_at); };
+    HIST = { drives: mix(HIST.drives, o.drives), charges: mix(HIST.charges, o.charges), idles: mix(HIST.idles, o.idles), sources: [...new Set([...(HIST.sources || []), o.source || 'Import'])] };
+    store.set('hist', HIST); rafraichirTout(); toast('Historique importé : ' + o.drives.length + ' trajets, ' + o.charges.length + ' recharges');
+  } catch (er) { toast('Import impossible : ' + er.message); }
+  e.target.value = '';
+};
+$('#histSuppr').onclick = e => {
+  if (e.currentTarget.dataset.ok !== '1') { e.currentTarget.dataset.ok = '1'; e.currentTarget.textContent = 'Touchez encore pour confirmer'; setTimeout(() => { $('#histSuppr').dataset.ok = ''; $('#histSuppr').textContent = 'Effacer l\'historique importé'; }, 3000); return; }
+  HIST = { drives: [], charges: [], idles: [], sources: [] }; store.set('hist', HIST); rafraichirTout(); toast('Historique importé effacé');
+};
+
 // ---------- Gains et rentabilité ----------
-const P_DEF = { essence: 1.905, conso: 7, solaire: 0.20, reseau: 0.43, wh: 175, achat: '', surcout: 0, entretien: 300, kwc: 5, incl: 35, maison: 0.4, prise: 2.8, batt: 57.5 };
+const P_DEF = { essence: 1.905, conso: 7, solaire: 0.20, reseau: 0.43, wh: 175, achat: '', surcout: 0, entretien: 300, kwc: 5, incl: 35, maison: 0.4, prise: 2.8, batt: 57.5, superc: 0.52 };
 const P = Object.assign({}, P_DEF, store.get('prix', {}));
 const PL = [
   ['essence', 'Prix de l\'essence (€/L)', 0.001], ['conso', 'Conso. voiture essence (L/100 km)', 0.1],
@@ -449,7 +485,7 @@ const PL = [
   ['wh', 'Conso. Tesla si inconnue (Wh/km)', 1], ['achat', 'Date d\'achat de la Tesla', 'date'],
   ['surcout', 'Surcoût à l\'achat vs essence (€)', 1], ['entretien', 'Entretien économisé par an (€)', 1],
   ['kwc', 'Puissance des panneaux (kWc)', 0.1], ['incl', 'Inclinaison du toit (°)', 1],
-  ['maison', 'Conso. de la maison en journée (kW)', 0.1], ['prise', 'Puissance de charge sur la prise (kW)', 0.1], ['batt', 'Capacité utile de la batterie (kWh)', 0.5]];
+  ['maison', 'Conso. de la maison en journée (kW)', 0.1], ['prise', 'Puissance de charge sur la prise (kW)', 0.1], ['batt', 'Capacité utile de la batterie (kWh)', 0.5], ['superc', 'Prix Superchargeur si inconnu (€/kWh)', 0.01]];
 function paramsUI() {
   $('#gParams').innerHTML = PL.map(([k, l, st]) => `<div class="row"><span style="font-size:14px">${l}</span><input data-p="${k}" type="${st === 'date' ? 'date' : 'number'}" ${st !== 'date' ? 'step="' + st + '" inputmode="decimal"' : ''} value="${P[k]}" style="width:${st === 'date' ? 140 : 90}px;text-align:right;background:var(--card2);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:8px;font:15px Inter,sans-serif"></div>`).join('');
   $('#gParams').onchange = e => { const k = e.target.dataset.p; if (!k) return; P[k] = e.target.type === 'date' ? e.target.value : +String(e.target.value).replace(',', '.'); store.set('prix', P); gains(); if (typeof hwAfficher === 'function') hwAfficher(); if (['kwc', 'incl'].includes(k)) store.set('meteo', null); prevision(); };
@@ -483,14 +519,15 @@ function analyser(charges, drives) {
       const res = partReseau(deb, fin, kwh);
       if (res != null) { resKwh += res; solKwh += kwh - res; mesure++; }
       else { const h = new Date(deb).getHours(); if (h >= 9 && h < 16) solKwh += kwh; else resKwh += kwh; }
-    } else { autreKwh += kwh; autreEur += c.cost ?? 0; }
+    } else { autreKwh += kwh; autreEur += c.cost ?? (c.energy_added ?? kwh) * P.superc; }
   });
   drives.forEach(d => { km += d.odometer_distance ?? d.distance ?? 0; });
+  const tous = charges.concat(drives); const t0 = tous.length ? Math.min(...tous.map(x => x.started_at)) : null, t1 = tous.length ? Math.max(...tous.map(x => x.ended_at || x.started_at)) : null;
   const elec = solKwh * P.solaire + resKwh * P.reseau + autreEur;
   const kwhTot = solKwh + resKwh + autreKwh;
   if (!km && kwhTot) km = kwhTot * 1000 / P.wh;
   const ess = km * P.conso / 100 * P.essence;
-  return { solKwh, resKwh, autreKwh, autreEur, km, elec, ess, kwhTot, mesure };
+  return { solKwh, resKwh, autreKwh, autreEur, km, elec, ess, kwhTot, mesure, t0, t1 };
 }
 function demoDonnees() {
   const r = { solKwh: 96, resKwh: 58, autreKwh: 52, autreEur: 33.68, km: 1180 };
@@ -503,19 +540,20 @@ async function gains() {
   if (gEnCours) return; gEnCours = true;
   let r;
   try {
+    const [a, b] = bornes();
     if (live()) {
       $('#gTotal').textContent = '…';
-      const [a, b] = bornes();
       const [c, d] = await Promise.all([
         api(`/${VIN}/charges?from=${a}&to=${b}&distance_format=km&format=json&superchargers_only=false`),
         api(`/${VIN}/drives?from=${a}&to=${b}&distance_format=km&format=json`)]);
-      r = analyser(c.results || [], d.results || []);
-    } else r = demoDonnees();
+      r = analyser(fusion(c.results, HIST.charges, a, b), fusion(d.results, HIST.drives, a, b));
+    } else if (aHist()) r = analyser(dansPeriode(HIST.charges, a, b), dansPeriode(HIST.drives, a, b));
+    else r = demoDonnees();
   } catch (e) { $('#gTotal').textContent = '—'; $('#gKm').textContent = 'Données indisponibles : ' + msgErreur(e); gEnCours = false; return; }
   gEnCours = false;
   const gain = r.ess - r.elec;
   $('#gTotal').textContent = eur(gain);
-  $('#gKm').textContent = fr(r.km, 0) + ' km parcourus' + (live() ? '' : ' (exemple)');
+  $('#gKm').textContent = fr(r.km, 0) + ' km parcourus' + (live() || aHist() ? '' : ' (exemple)');
   $('#gElec').textContent = eur(r.elec); $('#gEss').textContent = eur(r.ess);
   $('#g100').textContent = r.km ? fr(r.elec / r.km * 100, 2) + ' €' : '—';
   $('#gSol').textContent = r.kwhTot ? Math.round(r.solKwh / r.kwhTot * 100) + ' %' + (r.mesure ? ' ✓' : '') : '—';
@@ -524,7 +562,7 @@ async function gains() {
     + lig('🌙 Réseau (domicile, soir/nuit)', r.resKwh, r.resKwh * P.reseau, 'var(--warn)')
     + lig('⚡ Superchargeurs et bornes', r.autreKwh, r.autreEur, 'var(--txt)');
   // rentabilité
-  const [a, b] = bornes(); const jours = Math.max(1, (b - a) / 86400);
+  const [a, b] = bornes(); const jours = !r.t0 ? Math.max(1, (b - a) / 86400) : Math.max(1, (Math.min(b, r.t1) - Math.max(a, r.t0)) / 86400);
   const parAn = gain / jours * 365 + (+P.entretien || 0);
   let rent = `<div class="row"><span>Économie estimée par an</span><b style="color:var(--ok)">${eur(parAn)}</b></div>`;
   if (+P.surcout > 0 && parAn > 0) {
@@ -645,9 +683,10 @@ function trajetsDemo() {
   return r;
 }
 async function chargerTrajets() {
-  if (!live()) { TR = trajetsDemo(); return; }
   const to = Math.floor(Date.now() / 1000), from = to - 365 * 86400;
-  const d = await api(`/${VIN}/drives?from=${from}&to=${to}&distance_format=km&temperature_format=c&format=json`);
+  if (!live() && !aHist()) { TR = trajetsDemo(); return; }
+  const d = live() ? await api(`/${VIN}/drives?from=${from}&to=${to}&distance_format=km&temperature_format=c&format=json`) : { results: [] };
+  d.results = fusion(d.results, HIST.drives, from, to);
   let temps = null;
   try { temps = await tempsHoraires(); } catch (e) {}
   TR = (d.results || []).map(x => {
@@ -672,7 +711,7 @@ async function temperature() {
     <div class="card" style="background:var(--card2)"><span class="mut">Par froid (&lt; 8 °C)</span><b style="color:#6fb6ff">${mf ? Math.round(mf) + ' Wh/km' : '—'}</b></div>
     <div class="card" style="background:var(--card2)"><span class="mut">Par temps doux (≥ 15 °C)</span><b style="color:var(--ok)">${md ? Math.round(md) + ' Wh/km' : '—'}</b></div></div>`;
   if (mf && md) res += `<div style="margin-top:10px;font-size:15px;line-height:1.45;color:var(--txt)">Le froid augmente votre consommation de <b>${Math.round((mf / md - 1) * 100)} %</b>. Sur le réseau, 100 km coûtent environ <b>${eur(prix100(mf))}</b> en hiver contre <b>${eur(prix100(md))}</b> par temps doux.</div>`;
-  res += `<div class="mut" style="font-size:13px;margin-top:6px">Moyenne sur ${TR.length} trajets : ${Math.round(mt)} Wh/km${live() ? '' : ' (exemple)'}.</div>`;
+  res += `<div class="mut" style="font-size:13px;margin-top:6px">Moyenne sur ${TR.length} trajets : ${Math.round(mt)} Wh/km${live() || aHist() ? '' : ' (exemple)'}.</div>`;
   $('#tResume').innerHTML = res;
   // nuage de points : température (x) / consommation (y)
   const W = 340, H = 210, g = { l: 34, r: 8, t: 20, b: 26 };
@@ -710,7 +749,7 @@ function idlesDemo(a, b) {
 async function pertes() {
   const [a, b] = bornes();
   let list;
-  try { list = live() ? ((await api(`/${VIN}/idles?from=${a}&to=${b}&format=json`)).results || []) : idlesDemo(a, b); }
+  try { list = live() ? fusion((await api(`/${VIN}/idles?from=${a}&to=${b}&format=json`)).results, HIST.idles, a, b) : aHist() ? dansPeriode(HIST.idles, a, b) : idlesDemo(a, b); }
   catch (e) { $('#pResume').textContent = 'Données indisponibles : ' + msgErreur(e); return; }
   let tot = 0, sen = 0, cli = 0, h = 0;
   const parJour = {};
@@ -724,7 +763,8 @@ async function pertes() {
     const k = cleJour(new Date((x.started_at || 0) * 1000));
     (parJour[k] = parJour[k] || { e: 0, s: 0, c: 0, h: 0 }); parJour[k].e += e; parJour[k].s += ps; parJour[k].c += pc; parJour[k].h += ((x.ended_at || 0) - (x.started_at || 0)) / 3600;
   });
-  const veille = Math.max(0, tot - sen - cli), jours = Math.max(1, (b - a) / 86400);
+  const debL = list.length ? Math.max(a, Math.min(...list.map(x => x.started_at))) : a, finL = list.length ? Math.min(b, Math.max(...list.map(x => x.ended_at || x.started_at))) : b;
+  const veille = Math.max(0, tot - sen - cli), jours = Math.max(1, (finL - debL) / 86400);
   const prix = P.reseau, an = tot / jours * 365;
   if (!list.length) { $('#pResume').textContent = 'Aucune période à l\'arrêt enregistrée sur cette période.'; $('#pGraph').innerHTML = ''; return; }
   const ligne = (ic, t, k, c) => `<div class="row"><span>${ic} ${t}</span><span><b style="color:${c}">${fr(k, 1)} kWh</b> <span class="mut">· ${eur(k * prix)}</span></span></div>`;
@@ -736,7 +776,7 @@ async function pertes() {
     <div style="margin-top:8px">${ligne('🛡️', 'Sentinelle', sen, '#ff5b5b')}${ligne('❄️', 'Climatisation à l\'arrêt', cli, '#6fb6ff')}${ligne('💤', 'Veille normale', veille, 'var(--mut)')}</div>`;
   const pct = tot ? sen / tot : 0;
   html += `<div style="margin-top:10px;font-size:14px;line-height:1.45;color:var(--txt)">${pct > .35 ? `💡 La Sentinelle représente <b>${Math.round(pct * 100)} %</b> des pertes. La couper à la maison ferait gagner environ <b>${eur(sen / jours * 365 * prix * .6)}</b> par an. L'option « Sauf à la maison » des Réglages le fait déjà quand l'application est ouverte.` : tot / jours > 1 ? '💡 Les pertes sont élevées : vérifiez qu\'aucune application ne réveille la voiture trop souvent (par exemple TeslaFi et Tessie en même temps).' : '👍 Vos pertes à l\'arrêt sont faibles.'}</div>`;
-  html += `<div class="mut" style="font-size:12px;margin-top:6px">Prix compté : ${fr(prix, 2)} €/kWh (réseau). ${live() ? '' : 'Données d\'exemple.'} Le partage entre Sentinelle, climatisation et veille est estimé.</div>`;
+  html += `<div class="mut" style="font-size:12px;margin-top:6px">Prix compté : ${fr(prix, 2)} €/kWh (réseau). ${live() || aHist() ? '' : 'Données d\'exemple.'} Le partage entre Sentinelle, climatisation et veille est estimé.</div>`;
   $('#pResume').innerHTML = html;
   // graphique empilé par jour (ou par semaine si la période est longue)
   let ks = Object.keys(parJour).sort(), G = parJour, lib = k => +k.slice(8) % 5 === 0 || k.slice(8) === '01' ? String(+k.slice(8)) : '';
@@ -759,6 +799,7 @@ async function pertes() {
 }
 
 $('#periode').onchange = () => { gains(); pertes(); };
+histAfficher();
 hwAfficher();
 
 // ---------- Démo : historique fictif ----------
