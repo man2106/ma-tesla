@@ -249,11 +249,11 @@ $('#cx').onclick = async () => {
   } catch (e) { TOKEN = ''; $('#cxEtat').textContent = 'Échec de la connexion : ' + msgErreur(e); }
 };
 function choisir(vin) {
-  VIN = vin; store.set('vin', vin); $('#vins').style.display = 'none'; $('#tok').value = '';
+  VIN = vin; store.set('vin', vin); TR = null; $('#vins').style.display = 'none'; $('#tok').value = '';
   if (!store.get('lieux', null)) L.length = 0;
   sauverLieux(); lieux(); connexionUI(); toast('Voiture connectée'); toutCharger();
 }
-$('#dx').onclick = () => { TOKEN = ''; VIN = ''; store.set('token', ''); store.set('vin', ''); connexionUI(); toast('Déconnectée'); };
+$('#dx').onclick = () => { TOKEN = ''; VIN = ''; TR = null; store.set('token', ''); store.set('vin', ''); connexionUI(); toast('Déconnectée'); };
 
 
 
@@ -441,7 +441,7 @@ $('#hwSuppr').onclick = e => {
 };
 
 // ---------- Gains et rentabilité ----------
-const P_DEF = { essence: 1.905, conso: 7, solaire: 0.20, reseau: 0.43, wh: 175, achat: '', surcout: 0, entretien: 300, kwc: 5, incl: 35, maison: 0.4, prise: 2.3 };
+const P_DEF = { essence: 1.905, conso: 7, solaire: 0.20, reseau: 0.43, wh: 175, achat: '', surcout: 0, entretien: 300, kwc: 5, incl: 35, maison: 0.4, prise: 2.3, batt: 57.5 };
 const P = Object.assign({}, P_DEF, store.get('prix', {}));
 const PL = [
   ['essence', 'Prix de l\'essence (€/L)', 0.001], ['conso', 'Conso. voiture essence (L/100 km)', 0.1],
@@ -449,7 +449,7 @@ const PL = [
   ['wh', 'Conso. Tesla si inconnue (Wh/km)', 1], ['achat', 'Date d\'achat de la Tesla', 'date'],
   ['surcout', 'Surcoût à l\'achat vs essence (€)', 1], ['entretien', 'Entretien économisé par an (€)', 1],
   ['kwc', 'Puissance des panneaux (kWc)', 0.1], ['incl', 'Inclinaison du toit (°)', 1],
-  ['maison', 'Conso. de la maison en journée (kW)', 0.1], ['prise', 'Puissance de charge sur la prise (kW)', 0.1]];
+  ['maison', 'Conso. de la maison en journée (kW)', 0.1], ['prise', 'Puissance de charge sur la prise (kW)', 0.1], ['batt', 'Capacité utile de la batterie (kWh)', 0.5]];
 function paramsUI() {
   $('#gParams').innerHTML = PL.map(([k, l, st]) => `<div class="row"><span style="font-size:14px">${l}</span><input data-p="${k}" type="${st === 'date' ? 'date' : 'number'}" ${st !== 'date' ? 'step="' + st + '" inputmode="decimal"' : ''} value="${P[k]}" style="width:${st === 'date' ? 140 : 90}px;text-align:right;background:var(--card2);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:8px;font:15px Inter,sans-serif"></div>`).join('');
   $('#gParams').onchange = e => { const k = e.target.dataset.p; if (!k) return; P[k] = e.target.type === 'date' ? e.target.value : +String(e.target.value).replace(',', '.'); store.set('prix', P); gains(); if (typeof hwAfficher === 'function') hwAfficher(); if (['kwc', 'incl'].includes(k)) store.set('meteo', null); prevision(); };
@@ -623,6 +623,80 @@ function solAfficher() {
 prevision();
 setInterval(prevision, 30 * 60000);
 
+// ---------- Consommation selon la température ----------
+let TR = null, tSel = null;
+async function tempsHoraires() {
+  // températures heure par heure des 92 derniers jours à la maison (secours si Tessie ne donne pas la température)
+  let c = store.get('tempsPasse', null);
+  if (c && Date.now() - c.t < 6 * 3600000) return c.m;
+  const [la, lo] = posMaison();
+  const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${la.toFixed(3)}&longitude=${lo.toFixed(3)}&hourly=temperature_2m&past_days=92&forecast_days=1&timezone=Europe%2FBrussels`);
+  const d = await r.json(); const m = {};
+  d.hourly.time.forEach((t, i) => { m[t.slice(0, 13)] = d.hourly.temperature_2m[i]; });
+  store.set('tempsPasse', { t: Date.now(), m }); return m;
+}
+function trajetsDemo() {
+  const r = [];
+  for (let i = 0; i < 70; i++) {
+    const temp = -3 + Math.random() * 30, km = 5 + Math.random() * 60;
+    const wh = 150 + Math.max(0, 15 - temp) * 4.2 + (km < 12 ? 35 : 0) + (Math.random() - .5) * 30;
+    r.push({ date: new Date(Date.now() - i * 2.5 * 86400000), km, wh, temp, de: 'Exemple', a: 'Exemple' });
+  }
+  return r;
+}
+async function chargerTrajets() {
+  if (!live()) { TR = trajetsDemo(); return; }
+  const to = Math.floor(Date.now() / 1000), from = to - 365 * 86400;
+  const d = await api(`/${VIN}/drives?from=${from}&to=${to}&distance_format=km&temperature_format=c&format=json`);
+  let temps = null;
+  try { temps = await tempsHoraires(); } catch (e) {}
+  TR = (d.results || []).map(x => {
+    const km = x.odometer_distance ?? x.distance ?? 0;
+    let kwh = x.energy_used ?? null;
+    if (kwh == null && x.starting_battery != null && x.ending_battery != null) kwh = (x.starting_battery - x.ending_battery) / 100 * P.batt;
+    const date = new Date((x.started_at || 0) * 1000);
+    let temp = x.average_outside_temperature ?? x.outside_temperature ?? null;
+    if (temp == null && temps) { const k = cleJour(date) + 'T' + pad(date.getHours()); temp = temps[k] ?? null; }
+    return { date, km, wh: km > 0 && kwh != null ? kwh * 1000 / km : null, temp, de: x.starting_saved_location || x.starting_location || '', a: x.ending_saved_location || x.ending_location || '' };
+  }).filter(x => x.km >= 3 && x.wh != null && x.wh > 60 && x.wh < 450 && x.temp != null);
+}
+function moyenne(arr) { const km = arr.reduce((a, x) => a + x.km, 0); return km ? arr.reduce((a, x) => a + x.wh * x.km, 0) / km : null; }
+async function temperature() {
+  try { if (!TR) await chargerTrajets(); }
+  catch (e) { $('#tResume').textContent = 'Trajets indisponibles : ' + msgErreur(e); return; }
+  if (!TR.length) { $('#tResume').textContent = 'Pas encore assez de trajets avec température.'; return; }
+  const froid = TR.filter(x => x.temp < 8), doux = TR.filter(x => x.temp >= 15);
+  const mf = moyenne(froid), md = moyenne(doux), mt = moyenne(TR);
+  const prix100 = w => w / 1000 * 100 * P.reseau;
+  let res = `<div class="stat">
+    <div class="card" style="background:var(--card2)"><span class="mut">Par froid (&lt; 8 °C)</span><b style="color:#6fb6ff">${mf ? Math.round(mf) + ' Wh/km' : '—'}</b></div>
+    <div class="card" style="background:var(--card2)"><span class="mut">Par temps doux (≥ 15 °C)</span><b style="color:var(--ok)">${md ? Math.round(md) + ' Wh/km' : '—'}</b></div></div>`;
+  if (mf && md) res += `<div style="margin-top:10px;font-size:15px;line-height:1.45;color:var(--txt)">Le froid augmente votre consommation de <b>${Math.round((mf / md - 1) * 100)} %</b>. Sur le réseau, 100 km coûtent environ <b>${eur(prix100(mf))}</b> en hiver contre <b>${eur(prix100(md))}</b> par temps doux.</div>`;
+  res += `<div class="mut" style="font-size:13px;margin-top:6px">Moyenne sur ${TR.length} trajets : ${Math.round(mt)} Wh/km${live() ? '' : ' (exemple)'}.</div>`;
+  $('#tResume').innerHTML = res;
+  // nuage de points : température (x) / consommation (y)
+  const W = 340, H = 210, g = { l: 34, r: 8, t: 20, b: 26 };
+  const tmin = Math.floor(Math.min(...TR.map(x => x.temp), 0) / 5) * 5, tmax = Math.ceil(Math.max(...TR.map(x => x.temp), 25) / 5) * 5;
+  const wmin = 100, wmax = Math.max(300, Math.ceil(Math.max(...TR.map(x => x.wh)) / 50) * 50);
+  const X = v => g.l + (v - tmin) / (tmax - tmin) * (W - g.l - g.r), Y = v => H - g.b - (v - wmin) / (wmax - wmin) * (H - g.t - g.b);
+  const col = t => t < 5 ? '#6fb6ff' : t < 12 ? '#9cc3ff' : t < 20 ? '#2ecc71' : '#ff9f43';
+  // moyenne par tranche de 5 °C
+  const tr = []; for (let a = tmin; a < tmax; a += 5) { const m = moyenne(TR.filter(x => x.temp >= a && x.temp < a + 5)); if (m) tr.push([a + 2.5, m]); }
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;touch-action:manipulation">`;
+  for (let w = wmin; w <= wmax; w += 50) svg += `<line x1="${g.l}" x2="${W - g.r}" y1="${Y(w)}" y2="${Y(w)}" stroke="#2a2e35"/><text x="${g.l - 4}" y="${Y(w) + 3}" text-anchor="end" font-size="9" fill="#8b929c">${w}</text>`;
+  for (let t = tmin; t <= tmax; t += 5) svg += `<text x="${X(t)}" y="${H - 10}" text-anchor="middle" font-size="9" fill="#8b929c">${t}°</text>`;
+  svg += `<text x="${W - g.r}" y="${H - 1}" text-anchor="end" font-size="9" fill="#8b929c">température extérieure</text><text x="2" y="9" font-size="9" fill="#8b929c">Wh/km</text>`;
+  TR.forEach((x, i) => { svg += `<circle data-t="${i}" cx="${X(x.temp).toFixed(1)}" cy="${Y(Math.min(x.wh, wmax)).toFixed(1)}" r="${Math.min(9, 2.5 + Math.sqrt(x.km) / 1.6).toFixed(1)}" fill="${col(x.temp)}" fill-opacity="${tSel === i ? 1 : .55}" stroke="${tSel === i ? '#fff' : 'none'}" stroke-width="2" style="cursor:pointer"/>`; });
+  if (tr.length > 1) svg += `<polyline points="${tr.map(p => X(p[0]).toFixed(1) + ',' + Y(p[1]).toFixed(1)).join(' ')}" fill="none" stroke="#fff" stroke-width="2.5" stroke-linejoin="round" opacity=".9"/>` + tr.map(p => `<circle cx="${X(p[0])}" cy="${Y(p[1])}" r="3" fill="#fff"/>`).join('');
+  svg += '</svg>';
+  $('#tGraph').innerHTML = svg + '<div class="mut" style="font-size:11px;margin-top:4px">Chaque point = un trajet (plus il est gros, plus le trajet est long). La ligne blanche = moyenne par tranche de 5 °C.</div>';
+  $('#tGraph').querySelectorAll('[data-t]').forEach(c => c.onclick = () => { tSel = +c.dataset.t; temperature(); });
+  if (tSel != null && TR[tSel]) {
+    const x = TR[tSel];
+    $('#tDetail').innerHTML = `<b style="color:var(--txt)">${x.date.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })} à ${x.date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</b> · ${fr(x.km, 0)} km · <b style="color:var(--txt)">${Math.round(x.wh)} Wh/km</b> · ${fr(x.temp, 0)} °C · coût ≈ ${eur(x.km * x.wh / 1000 * P.reseau)} (réseau)${x.de || x.a ? '<br>' + (x.de || '?') + ' → ' + (x.a || '?') : ''}${x.km < 12 ? '<br>💡 Les petits trajets consomment plus : le chauffage de l\'habitacle pèse lourd.' : ''}`;
+  } else $('#tDetail').textContent = 'Touchez un point pour voir le trajet.';
+}
+
 $('#periode').onchange = gains;
 hwAfficher();
 
@@ -640,12 +714,12 @@ function go() {
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('act', a.dataset.v === ok));
   window.scrollTo(0, 0);
 }
-addEventListener('hashchange', () => { go(); if (location.hash === '#gains') gains(); });
+addEventListener('hashchange', () => { go(); if (location.hash === '#gains') { gains(); temperature(); } });
 
 function toutAfficher() { tuiles(); etat(); clim(); lim(); batterie(); carte(); }
 function toutCharger() { charger(); chargerMeteo(); chargerHistorique(); }
 
-toutAfficher(); lieux(); connexionUI(); paramsUI(); go(); if (location.hash === '#gains') gains();
+toutAfficher(); lieux(); connexionUI(); paramsUI(); go(); if (location.hash === '#gains') { gains(); temperature(); }
 if (live()) toutCharger(); else histoDemo();
 setInterval(() => { if (live() && !document.hidden) charger(); }, 60000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && live()) charger(); });

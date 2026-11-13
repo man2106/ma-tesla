@@ -168,7 +168,7 @@ input[type=range]{width:100%;accent-color:var(--acc)}
   </div>
   <h2>Application</h2>
   <div class="card">
-    <div class="row"><span>Version</span><b>7 · 13 nov.</b></div>
+    <div class="row"><span>Version</span><b>8 · 13 nov.</b></div>
     <button class="btn sec" id="maj">Mettre à jour l'application</button>
   </div>
   <h2>À propos</h2>
@@ -212,6 +212,12 @@ input[type=range]{width:100%;accent-color:var(--acc)}
       <input type="file" id="hwFile" accept=".csv,text/csv,text/plain" style="display:none"></label>
     <button class="btn sec" id="hwSuppr" style="display:none;color:var(--mut)">Effacer les données du compteur</button>
   </div>
+  <h2>🌡️ Consommation et température</h2>
+  <div class="card" id="tCard">
+    <div id="tResume" class="mut">Chargement des trajets…</div>
+    <div id="tGraph" style="margin-top:12px"></div>
+    <div id="tDetail" class="mut" style="font-size:13px;margin-top:8px"></div>
+  </div>
   <h2>Rentabilité</h2>
   <div class="card" id="gRent"></div>
   <h2>Conseil</h2>
@@ -231,6 +237,6 @@ input[type=range]{width:100%;accent-color:var(--acc)}
   <a href="#reglages" data-v="reglages"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Réglages</a>
 </nav>
 
-<script src="app.js?v=7"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>
