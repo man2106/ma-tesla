@@ -194,9 +194,18 @@ input[type=range]{width:100%;accent-color:var(--acc)}
   <div class="card" id="gRent"></div>
   <h2>Conseil</h2>
   <div class="card" id="gConseil" style="font-size:14px;line-height:1.5"></div>
+  <h2>Compteur électrique (HomeWizard)</h2>
+  <div class="card" id="hwCard">
+    <div class="mut" id="hwInfo" style="font-size:14px;line-height:1.5">Aucun fichier importé. Exportez vos données depuis l'app HomeWizard (Paramètres → Graphiques → Exporter), puis importez le fichier ici.</div>
+    <div id="hwStats"></div>
+    <div id="hwGraph" style="margin-top:12px"></div>
+    <label class="btn sec" style="display:block;text-align:center">📄 Importer un fichier CSV
+      <input type="file" id="hwFile" accept=".csv,text/csv,text/plain" style="display:none"></label>
+    <button class="btn sec" id="hwSuppr" style="display:none;color:var(--mut)">Effacer les données du compteur</button>
+  </div>
   <h2>Mes prix</h2>
   <div class="card" id="gParams"></div>
-  <div class="mut" style="font-size:12px;margin-top:10px;line-height:1.5">Les recharges à domicile commencées entre 9 h et 16 h sont comptées comme solaires. Les prix des Superchargeurs viennent de vos vraies factures.</div>
+  <div class="mut" style="font-size:12px;margin-top:10px;line-height:1.5">Avec un fichier HomeWizard par heure ou par quart d'heure, la part solaire de chaque recharge est calculée à partir du compteur. Sinon, les recharges à domicile commencées entre 9 h et 16 h sont comptées comme solaires. Les prix des Superchargeurs viennent de vos vraies factures.</div>
 </section>
 
 <div class="toast" id="toast"></div>

@@ -256,6 +256,100 @@ function choisir(vin) {
 $('#dx').onclick = () => { TOKEN = ''; VIN = ''; store.set('token', ''); store.set('vin', ''); connexionUI(); toast('Déconnectée'); };
 
 
+
+// ---------- Compteur HomeWizard (import CSV) ----------
+// Stockage compact : [minutes depuis 1970, import cumulé kWh, export cumulé kWh]
+let HW = store.get('hw', []);
+function lireCSV(txt) {
+  const lignes = txt.replace(/^﻿/, '').split(/\r?\n/).filter(l => l.trim());
+  if (lignes.length < 3) throw new Error('fichier vide ou trop court');
+  const sep = (lignes[0].match(/;/g) || []).length > (lignes[0].match(/,/g) || []).length ? ';' : ',';
+  const tete = lignes[0].split(sep).map(h => h.trim().replace(/"/g, ''));
+  const iT = tete.findIndex(h => /^(time|date|tijd|datum)/i.test(h));
+  const iImp = tete.map((h, i) => /import/i.test(h) && /kwh/i.test(h) ? i : -1).filter(i => i >= 0);
+  const iExp = tete.map((h, i) => /export/i.test(h) && /kwh/i.test(h) ? i : -1).filter(i => i >= 0);
+  if (iT < 0 || !iImp.length) throw new Error('ce n\'est pas un export HomeWizard d\'électricité');
+  const num = v => { v = (v || '').trim().replace(/"/g, ''); if (sep === ';') v = v.replace(',', '.'); const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+  const out = [];
+  for (const l of lignes.slice(1)) {
+    const c = l.split(sep);
+    const t = new Date((c[iT] || '').trim().replace(/"/g, '').replace(' ', 'T'));
+    if (isNaN(t)) continue;
+    out.push([Math.round(t / 60000), iImp.reduce((a, i) => a + num(c[i]), 0), iExp.reduce((a, i) => a + num(c[i]), 0)]);
+  }
+  if (out.length < 2) throw new Error('aucune ligne lisible');
+  return out;
+}
+function fusionner(nouv) {
+  const m = new Map(HW.map(r => [r[0], r])); nouv.forEach(r => m.set(r[0], r));
+  HW = [...m.values()].sort((a, b) => a[0] - b[0]);
+  try { store.set('hw', HW); localStorage.getItem('mt_hw'); } catch (e) {}
+}
+// Intervalles : {a, b (ms), imp, exp}
+function intervalles() {
+  const r = [];
+  for (let i = 0; i < HW.length - 1; i++) {
+    const di = HW[i + 1][1] - HW[i][1], de = HW[i + 1][2] - HW[i][2];
+    if (di < 0 || de < 0) continue;
+    r.push({ a: HW[i][0] * 60000, b: HW[i + 1][0] * 60000, imp: di, exp: de });
+  }
+  return r;
+}
+function resolutionMin() {
+  if (HW.length < 2) return Infinity;
+  const d = []; for (let i = 1; i < Math.min(HW.length, 50); i++) d.push(HW[i][0] - HW[i - 1][0]);
+  d.sort((x, y) => x - y); return d[Math.floor(d.length / 2)];
+}
+// Part réseau d'une recharge : ce que la maison a pris au réseau pendant la charge (prudent)
+function partReseau(debut, fin, kwh) {
+  if (resolutionMin() > 60 || !fin || fin <= debut) return null;
+  const iv = intervalles(); let imp = 0, couvert = 0;
+  for (const x of iv) {
+    const o = Math.min(fin, x.b) - Math.max(debut, x.a); if (o <= 0) continue;
+    const f = o / (x.b - x.a); imp += x.imp * f; couvert += o;
+  }
+  if (couvert < (fin - debut) * 0.8) return null;
+  return Math.min(kwh, imp);
+}
+function hwAfficher() {
+  const has = HW.length > 1;
+  $('#hwSuppr').style.display = has ? '' : 'none';
+  if (!has) { $('#hwStats').innerHTML = ''; $('#hwGraph').innerHTML = ''; return; }
+  const iv = intervalles();
+  const d0 = new Date(HW[0][0] * 60000), d1 = new Date(HW[HW.length - 1][0] * 60000);
+  const res = resolutionMin();
+  const resTxt = res <= 15 ? 'par quart d\'heure' : res <= 60 ? 'par heure' : res <= 1440 ? 'par jour' : 'grossier';
+  const f = d => d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
+  $('#hwInfo').innerHTML = `Données du ${f(d0)} au ${f(d1)} · détail ${resTxt}` + (res > 60 ? '<br><span style="color:var(--warn)">Pour calculer la part solaire de chaque recharge, importez aussi un export par heure ou par quart d\'heure.</span>' : '<br><span style="color:var(--ok)">Part solaire calculée recharge par recharge.</span>');
+  let imp = 0, exp = 0; const mois = {};
+  iv.forEach(x => { imp += x.imp; exp += x.exp; const dt = new Date(x.a), k = dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0'); (mois[k] = mois[k] || { imp: 0, exp: 0 }); mois[k].imp += x.imp; mois[k].exp += x.exp; });
+  const gainMax = exp * (P.reseau - P.solaire);
+  $('#hwStats').innerHTML = `<div class="stat" style="margin-top:12px">
+    <div class="card" style="background:var(--card2)"><span class="mut">Pris au réseau</span><b>${fr(imp, 0)} kWh</b></div>
+    <div class="card" style="background:var(--card2)"><span class="mut">Renvoyé au réseau</span><b style="color:var(--warn)">${fr(exp, 0)} kWh</b></div></div>
+    <div class="row" style="margin-top:8px"><span style="font-size:14px">Bilan sur la période</span><b>${imp >= exp ? 'vous consommez ' + fr(imp - exp, 0) + ' kWh de plus' : 'vous produisez ' + fr(exp - imp, 0) + ' kWh de trop'}</b></div>
+    <div class="row"><span style="font-size:14px">Soleil renvoyé = km possibles</span><b>≈ ${fr(exp * 1000 / P.wh, 0)} km</b></div>
+    <div class="row"><span style="font-size:14px">Gain si ce soleil allait dans la Tesla</span><b style="color:var(--ok)">jusqu'à ${eur(gainMax)}</b></div>`;
+  const ks = Object.keys(mois).sort().slice(-12);
+  const max = Math.max(...ks.map(k => Math.max(mois[k].imp, mois[k].exp)), 1);
+  $('#hwGraph').innerHTML = `<div style="display:flex;gap:12px;font-size:12px;margin-bottom:6px" class="mut"><span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--acc)"></i> Pris</span><span><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--warn)"></i> Renvoyé</span></div>
+    <div style="display:flex;align-items:flex-end;gap:6px;height:120px">${ks.map(k => `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;height:100%;justify-content:flex-end">
+      <div style="display:flex;gap:2px;align-items:flex-end;height:100%;width:100%;justify-content:center">
+        <div title="${fr(mois[k].imp, 0)} kWh" style="width:45%;background:var(--acc);border-radius:3px 3px 0 0;height:${mois[k].imp / max * 100}%"></div>
+        <div title="${fr(mois[k].exp, 0)} kWh" style="width:45%;background:var(--warn);border-radius:3px 3px 0 0;height:${mois[k].exp / max * 100}%"></div></div>
+      <span class="mut" style="font-size:10px">${new Date(k + '-01').toLocaleDateString('fr-FR', { month: 'short' }).replace('.', '')}</span></div>`).join('')}</div>`;
+}
+$('#hwFile').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try { const n = lireCSV(await f.text()); fusionner(n); hwAfficher(); gains(); toast(n.length + ' lignes importées'); }
+  catch (er) { toast('Import impossible : ' + er.message); }
+  e.target.value = '';
+};
+$('#hwSuppr').onclick = e => {
+  if (e.currentTarget.dataset.ok !== '1') { e.currentTarget.dataset.ok = '1'; e.currentTarget.textContent = 'Touchez encore pour confirmer'; setTimeout(() => { $('#hwSuppr').dataset.ok = ''; $('#hwSuppr').textContent = 'Effacer les données du compteur'; }, 3000); return; }
+  HW = []; store.set('hw', []); hwAfficher(); gains(); toast('Données du compteur effacées');
+};
+
 // ---------- Gains et rentabilité ----------
 const P_DEF = { essence: 1.905, conso: 7, solaire: 0.20, reseau: 0.43, wh: 175, achat: '', surcout: 0, entretien: 300 };
 const P = Object.assign({}, P_DEF, store.get('prix', {}));
@@ -266,7 +360,7 @@ const PL = [
   ['surcout', 'Surcoût à l\'achat vs essence (€)', 1], ['entretien', 'Entretien économisé par an (€)', 1]];
 function paramsUI() {
   $('#gParams').innerHTML = PL.map(([k, l, st]) => `<div class="row"><span style="font-size:14px">${l}</span><input data-p="${k}" type="${st === 'date' ? 'date' : 'number'}" ${st !== 'date' ? 'step="' + st + '" inputmode="decimal"' : ''} value="${P[k]}" style="width:${st === 'date' ? 140 : 90}px;text-align:right;background:var(--card2);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:8px;font:15px Inter,sans-serif"></div>`).join('');
-  $('#gParams').onchange = e => { const k = e.target.dataset.p; if (!k) return; P[k] = e.target.type === 'date' ? e.target.value : +String(e.target.value).replace(',', '.'); store.set('prix', P); gains(); };
+  $('#gParams').onchange = e => { const k = e.target.dataset.p; if (!k) return; P[k] = e.target.type === 'date' ? e.target.value : +String(e.target.value).replace(',', '.'); store.set('prix', P); gains(); if (typeof hwAfficher === 'function') hwAfficher(); };
 }
 const eur = n => fr(n, n >= 1000 ? 0 : 2).replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' €';
 function bornes() {
@@ -285,12 +379,14 @@ function estDomicile(c) {
   return /home|domicile|maison/i.test((c.saved_location || '') + ' ' + (c.location || ''));
 }
 function analyser(charges, drives) {
-  let solKwh = 0, resKwh = 0, autreKwh = 0, autreEur = 0, km = 0;
+  let solKwh = 0, resKwh = 0, autreKwh = 0, autreEur = 0, km = 0, mesure = 0;
   charges.forEach(c => {
     const kwh = c.energy_used ?? c.energy_added ?? 0;
     if (estDomicile(c)) {
-      const h = new Date((c.started_at || 0) * 1000).getHours();
-      if (h >= 9 && h < 16) solKwh += kwh; else resKwh += kwh;
+      const deb = (c.started_at || 0) * 1000, fin = (c.ended_at || 0) * 1000;
+      const res = partReseau(deb, fin, kwh);
+      if (res != null) { resKwh += res; solKwh += kwh - res; mesure++; }
+      else { const h = new Date(deb).getHours(); if (h >= 9 && h < 16) solKwh += kwh; else resKwh += kwh; }
     } else { autreKwh += kwh; autreEur += c.cost ?? 0; }
   });
   drives.forEach(d => { km += d.odometer_distance ?? d.distance ?? 0; });
@@ -298,7 +394,7 @@ function analyser(charges, drives) {
   const kwhTot = solKwh + resKwh + autreKwh;
   if (!km && kwhTot) km = kwhTot * 1000 / P.wh;
   const ess = km * P.conso / 100 * P.essence;
-  return { solKwh, resKwh, autreKwh, autreEur, km, elec, ess, kwhTot };
+  return { solKwh, resKwh, autreKwh, autreEur, km, elec, ess, kwhTot, mesure };
 }
 function demoDonnees() {
   const r = { solKwh: 96, resKwh: 58, autreKwh: 52, autreEur: 33.68, km: 1180 };
@@ -326,7 +422,7 @@ async function gains() {
   $('#gKm').textContent = fr(r.km, 0) + ' km parcourus' + (live() ? '' : ' (exemple)');
   $('#gElec').textContent = eur(r.elec); $('#gEss').textContent = eur(r.ess);
   $('#g100').textContent = r.km ? fr(r.elec / r.km * 100, 2) + ' €' : '—';
-  $('#gSol').textContent = r.kwhTot ? Math.round(r.solKwh / r.kwhTot * 100) + ' %' : '—';
+  $('#gSol').textContent = r.kwhTot ? Math.round(r.solKwh / r.kwhTot * 100) + ' %' + (r.mesure ? ' ✓' : '') : '—';
   const lig = (t, k, e, col) => `<div class="row"><div><div>${t}</div><div class="mut">${fr(k, 0)} kWh</div></div><b style="color:${col}">${eur(e)}</b></div>`;
   $('#gRep').innerHTML = lig('☀️ Soleil (domicile, journée)', r.solKwh, r.solKwh * P.solaire, 'var(--ok)')
     + lig('🌙 Réseau (domicile, soir/nuit)', r.resKwh, r.resKwh * P.reseau, 'var(--warn)')
@@ -350,6 +446,7 @@ async function gains() {
     : 'Bravo : toutes vos recharges à domicile se font déjà au soleil.';
 }
 $('#periode').onchange = gains;
+hwAfficher();
 
 // ---------- Démo : historique fictif ----------
 function histoDemo() {
