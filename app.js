@@ -376,7 +376,11 @@ function estDomicile(c) {
   if (c.is_fast_charger) return false;
   const ici = L.find(l => l[3] != null && c.latitude != null && distance(c.latitude, c.longitude, l[3], l[4]) < 250);
   if (ici) return /domicile|maison/i.test(ici[1]);
-  return /home|domicile|maison/i.test((c.saved_location || '') + ' ' + (c.location || ''));
+  if (/home|domicile|maison|thuis/i.test((c.saved_location || '') + ' ' + (c.location || ''))) return true;
+  // Sinon : une charge lente (simple prise, 3,7 kW au plus) est considérée comme faite à la maison
+  const h = ((c.ended_at || 0) - (c.started_at || 0)) / 3600;
+  const kwh = c.energy_used ?? c.energy_added ?? 0;
+  return h > 0 && kwh / h <= 3.7;
 }
 function analyser(charges, drives) {
   let solKwh = 0, resKwh = 0, autreKwh = 0, autreEur = 0, km = 0, mesure = 0;

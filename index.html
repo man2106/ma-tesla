@@ -190,10 +190,6 @@ input[type=range]{width:100%;accent-color:var(--acc)}
   </div>
   <h2>D'où vient l'énergie</h2>
   <div class="card" id="gRep"></div>
-  <h2>Rentabilité</h2>
-  <div class="card" id="gRent"></div>
-  <h2>Conseil</h2>
-  <div class="card" id="gConseil" style="font-size:14px;line-height:1.5"></div>
   <h2>Compteur électrique (HomeWizard)</h2>
   <div class="card" id="hwCard">
     <div class="mut" id="hwInfo" style="font-size:14px;line-height:1.5">Aucun fichier importé. Exportez vos données depuis l'app HomeWizard (Paramètres → Graphiques → Exporter), puis importez le fichier ici.</div>
@@ -203,6 +199,10 @@ input[type=range]{width:100%;accent-color:var(--acc)}
       <input type="file" id="hwFile" accept=".csv,text/csv,text/plain" style="display:none"></label>
     <button class="btn sec" id="hwSuppr" style="display:none;color:var(--mut)">Effacer les données du compteur</button>
   </div>
+  <h2>Rentabilité</h2>
+  <div class="card" id="gRent"></div>
+  <h2>Conseil</h2>
+  <div class="card" id="gConseil" style="font-size:14px;line-height:1.5"></div>
   <h2>Mes prix</h2>
   <div class="card" id="gParams"></div>
   <div class="mut" style="font-size:12px;margin-top:10px;line-height:1.5">Avec un fichier HomeWizard par heure ou par quart d'heure, la part solaire de chaque recharge est calculée à partir du compteur. Sinon, les recharges à domicile commencées entre 9 h et 16 h sont comptées comme solaires. Les prix des Superchargeurs viennent de vos vraies factures.</div>
@@ -218,6 +218,6 @@ input[type=range]{width:100%;accent-color:var(--acc)}
   <a href="#reglages" data-v="reglages"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Réglages</a>
 </nav>
 
-<script src="app.js"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>
