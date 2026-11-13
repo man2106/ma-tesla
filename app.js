@@ -441,7 +441,7 @@ $('#hwSuppr').onclick = e => {
 };
 
 // ---------- Gains et rentabilité ----------
-const P_DEF = { essence: 1.905, conso: 7, solaire: 0.20, reseau: 0.43, wh: 175, achat: '', surcout: 0, entretien: 300, kwc: 5, incl: 35, maison: 0.4, prise: 2.3, batt: 57.5 };
+const P_DEF = { essence: 1.905, conso: 7, solaire: 0.20, reseau: 0.43, wh: 175, achat: '', surcout: 0, entretien: 300, kwc: 5, incl: 35, maison: 0.4, prise: 2.8, batt: 57.5 };
 const P = Object.assign({}, P_DEF, store.get('prix', {}));
 const PL = [
   ['essence', 'Prix de l\'essence (€/L)', 0.001], ['conso', 'Conso. voiture essence (L/100 km)', 0.1],
