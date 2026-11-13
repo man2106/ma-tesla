@@ -6,7 +6,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('mt_' + k, JSON.stringify(v)); } catch (e) {} }
 };
 
-let TOKEN = store.get('token', '');
+let TOKEN = store.get('lock', null) ? '' : store.get('token', '');
 let VIN = store.get('vin', '');
 const live = () => !!(TOKEN && VIN);
 
@@ -246,7 +246,7 @@ $('#cx').onclick = async () => {
     const d = await api('/vehicles?only_active=false');
     const list = (d.results || []).map(v => ({ vin: v.vin, nom: (v.last_state && v.last_state.display_name) || v.vin }));
     if (!list.length) throw new Error('aucune voiture trouvée sur ce compte');
-    store.set('token', TOKEN);
+    if (!(await securiserToken(TOKEN))) { TOKEN = ''; $('#cxEtat').textContent = 'Connexion annulée : un code est obligatoire'; return; }
     if (list.length === 1) { choisir(list[0].vin); return; }
     const sel = $('#vins'); sel.style.display = '';
     sel.innerHTML = '<option value="">Choisissez la voiture</option>' + list.map(v => `<option value="${esc(v.vin)}">${esc(v.nom)}</option>`).join('');
@@ -259,7 +259,7 @@ function choisir(vin) {
   if (!store.get('lieux', null)) L.length = 0;
   sauverLieux(); lieux(); connexionUI(); toast('Voiture connectée'); toutCharger();
 }
-$('#dx').onclick = () => { TOKEN = ''; VIN = ''; TR = null; store.set('token', ''); store.set('vin', ''); connexionUI(); toast('Déconnectée'); };
+$('#dx').onclick = () => { TOKEN = ''; VIN = ''; TR = null; store.set('token', ''); store.set('vin', ''); oublierToken(); connexionUI(); toast('Déconnectée'); };
 
 
 
@@ -809,6 +809,217 @@ $('#periode').onchange = () => { gains(); pertes(); };
 histAfficher();
 hwAfficher();
 
+// ======================================================================
+// Sécurité : code PIN + Face ID, code Tessie chiffré sur le téléphone
+// ======================================================================
+const enc = new TextEncoder(), dec = new TextDecoder();
+const b64 = u => btoa(String.fromCharCode(...new Uint8Array(u)));
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const alea = n => crypto.getRandomValues(new Uint8Array(n));
+async function clePin(pin, sel, iter) {
+  const base = await crypto.subtle.importKey('raw', enc.encode(pin), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt: sel, iterations: iter, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function chiffrer(cle, txt) { const iv = alea(12); const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, cle, enc.encode(txt)); return { iv: b64(iv), ct: b64(ct) }; }
+async function dechiffrer(cle, o) { return dec.decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(o.iv) }, cle, unb64(o.ct))); }
+async function clePrf(bytes) { return crypto.subtle.importKey('raw', bytes, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']); }
+
+// --- écran (verrouillage / création du code) ---
+function ecran() {
+  let o = $('#verrou');
+  if (!o) {
+    o = document.createElement('div'); o.id = 'verrou';
+    o.style.cssText = 'position:fixed;inset:0;z-index:999;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:calc(env(safe-area-inset-top) + 20px) 24px calc(env(safe-area-inset-bottom) + 20px);text-align:center';
+    document.body.appendChild(o);
+  }
+  o.style.display = 'flex'; return o;
+}
+function fermerEcran() { const o = $('#verrou'); if (o) { o.style.display = 'none'; o.innerHTML = ''; } }
+// Demande un code à 6 chiffres. Retourne le code, ou null si « Annuler ».
+function saisirPin(titre, sous, opts = {}) {
+  return new Promise(res => {
+    const o = ecran(); let v = '';
+    o.innerHTML = `<div style="font-size:40px">🔒</div><h1 style="margin:10px 0 6px">${titre}</h1><div class="mut" id="pinSous" style="min-height:38px;max-width:300px">${sous}</div>
+      <div id="pinPts" style="display:flex;gap:14px;margin:18px 0 26px">${'<i></i>'.repeat(6)}</div>
+      <div style="display:grid;grid-template-columns:repeat(3,74px);gap:14px">${[1, 2, 3, 4, 5, 6, 7, 8, 9, opts.faceid ? 'fid' : '', 0, 'del'].map(k => k === '' ? '<span></span>' :
+        `<button data-k="${k}" style="height:74px;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--txt);font:500 ${k === 'del' || k === 'fid' ? 18 : 28}px Inter,sans-serif">${k === 'del' ? '⌫' : k === 'fid' ? '🙂<div style="font-size:10px">Face ID</div>' : k}</button>`).join('')}</div>
+      ${opts.annuler ? '<button id="pinAnnul" class="btn sec" style="max-width:260px;margin-top:20px">Annuler</button>' : ''}`;
+    const pts = () => o.querySelectorAll('#pinPts i').forEach((x, i) => x.style.cssText = `width:14px;height:14px;border-radius:50%;border:2px solid var(--mut);background:${i < v.length ? 'var(--txt)' : 'transparent'}`);
+    pts();
+    o.querySelectorAll('[data-k]').forEach(b => b.onclick = () => {
+      const k = b.dataset.k;
+      if (k === 'fid') { opts.faceid(); return; }
+      if (k === 'del') v = v.slice(0, -1); else if (v.length < 6) v += k;
+      pts();
+      if (v.length === 6) { const r = v; v = ''; setTimeout(() => { pts(); res(r); }, 120); }
+    });
+    if (opts.annuler) $('#pinAnnul').onclick = () => res(null);
+  });
+}
+function messagePin(t, rouge) { const e = $('#pinSous'); if (e) { e.innerHTML = t; e.style.color = rouge ? 'var(--red)' : ''; } }
+
+// --- création du code et chiffrement du code Tessie ---
+async function creerPin(sous) {
+  while (true) {
+    const a = await saisirPin('Créez votre code', sous || 'Choisissez un code à 6 chiffres. Il protège l\'accès à votre voiture.', { annuler: !TOKEN_EN_ATTENTE_OBLIGATOIRE });
+    if (a === null) return null;
+    if (/^(\d)\1{5}$/.test(a) || '0123456789'.includes(a) || '9876543210'.includes(a)) { sous = '<span style="color:var(--red)">Code trop simple, choisissez-en un autre.</span>'; continue; }
+    const b = await saisirPin('Confirmez le code', 'Tapez-le une deuxième fois.');
+    if (a === b) return a;
+    sous = '<span style="color:var(--red)">Les deux codes sont différents, recommencez.</span>';
+  }
+}
+let TOKEN_EN_ATTENTE_OBLIGATOIRE = false;
+async function enregistrer(token, pin) {
+  const sel = alea(16), iter = 310000;
+  const L0 = store.get('lock', {}) || {};
+  const cle = await clePin(pin, sel, iter);
+  const nouveau = { v: 1, sel: b64(sel), iter, chk: await chiffrer(cle, 'ok'), pin: await chiffrer(cle, token || '') };
+  if (L0.cred && CLE_FID) { nouveau.cred = L0.cred; nouveau.prfSel = L0.prfSel; nouveau.fid = await chiffrer(CLE_FID, token || ''); }
+  store.set('lock', nouveau); store.set('token', ''); store.set('essais', 0);
+}
+let CLE_FID = null;
+// Appelé à la connexion Tessie : protège le nouveau code d'accès
+async function securiserToken(token) {
+  const L0 = store.get('lock', null);
+  let pin;
+  if (!L0) { pin = await creerPin('Pour protéger votre voiture, choisissez un code à 6 chiffres. Il sera demandé à chaque ouverture.'); }
+  else {
+    while (true) {
+      pin = await saisirPin('Votre code', 'Confirmez avec votre code pour enregistrer la connexion.', { annuler: true });
+      if (pin === null) break;
+      try { await dechiffrer(await clePin(pin, unb64(L0.sel), L0.iter), L0.chk); break; } catch (e) { /* mauvais code */ }
+    }
+  }
+  if (pin === null) { fermerEcran(); return false; }
+  await enregistrer(token, pin); fermerEcran();
+  if (!L0) proposerFaceId(token);
+  else if (L0.cred && !CLE_FID) { const L1 = store.get('lock'); delete L1.cred; delete L1.fid; delete L1.prfSel; store.set('lock', L1); toast('Réactivez Face ID dans Réglages → Sécurité'); }
+  majSecuUI();
+  return true;
+}
+function oublierToken() { const L0 = store.get('lock', null); if (L0) { L0.pin = null; L0.fid = null; store.set('lock', L0); } }
+
+// --- Face ID (passkey avec extension PRF : la clé ne quitte jamais l'iPhone) ---
+async function proposerFaceId(token) {
+  if (!window.PublicKeyCredential || !(await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().catch(() => false))) return;
+  const o = ecran();
+  o.innerHTML = `<div style="font-size:44px">🙂</div><h1 style="margin:10px 0 8px">Activer Face ID ?</h1><div class="mut" style="max-width:300px">Ouvrez l'application d'un simple regard. Le code reste disponible en secours.</div>
+    <button class="btn" id="fidOui" style="max-width:280px;margin-top:22px">Activer Face ID</button><button class="btn sec" id="fidNon" style="max-width:280px">Plus tard</button>`;
+  return new Promise(res => {
+    $('#fidNon').onclick = () => { fermerEcran(); res(false); };
+    $('#fidOui').onclick = async () => { const ok = await activerFaceId(token); fermerEcran(); toast(ok ? 'Face ID activé' : 'Face ID indisponible sur cet appareil : le code reste actif'); majSecuUI(); res(ok); };
+  });
+}
+async function activerFaceId(token) {
+  try {
+    const prfSel = alea(32);
+    const c = await navigator.credentials.create({ publicKey: {
+      rp: { name: 'Ma Tesla' }, user: { id: alea(16), name: 'ma-tesla', displayName: 'Ma Tesla' }, challenge: alea(32),
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+      authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'preferred' },
+      extensions: { prf: { eval: { first: prfSel } } } } });
+    let out = c.getClientExtensionResults().prf;
+    let bytes = out && out.results && out.results.first;
+    if (!bytes) bytes = await prfLire(c.rawId, prfSel);
+    if (!bytes) return false;
+    CLE_FID = await clePrf(bytes);
+    const L0 = store.get('lock');
+    L0.cred = b64(c.rawId); L0.prfSel = b64(prfSel); L0.fid = await chiffrer(CLE_FID, token);
+    store.set('lock', L0); return true;
+  } catch (e) { return false; }
+}
+async function prfLire(rawId, prfSel) {
+  const a = await navigator.credentials.get({ publicKey: { challenge: alea(32), allowCredentials: [{ type: 'public-key', id: rawId }], userVerification: 'required', extensions: { prf: { eval: { first: prfSel } } } } });
+  const r = a.getClientExtensionResults().prf; return r && r.results && r.results.first;
+}
+async function deverrouillerFaceId() {
+  const L0 = store.get('lock');
+  try {
+    const bytes = await prfLire(unb64(L0.cred), unb64(L0.prfSel)); if (!bytes) throw 0;
+    CLE_FID = await clePrf(bytes);
+    TOKEN = L0.fid ? await dechiffrer(CLE_FID, L0.fid) : '';
+    store.set('essais', 0); return true;
+  } catch (e) { messagePin('Face ID n\'a pas fonctionné : utilisez votre code.', true); return false; }
+}
+
+// --- verrouillage ---
+let deverrouille = false;
+async function verrouiller() {
+  deverrouille = false; TOKEN = ''; CLE_FID = null;
+  const L0 = store.get('lock');
+  const fid = L0.cred ? async () => { if (await deverrouillerFaceId()) fin(); } : null;
+  let fini = false; const fin = () => { if (fini) return; fini = true; deverrouille = true; fermerEcran(); apresDeverrouillage(); };
+  while (!fini) {
+    const essais = store.get('essais', 0);
+    const pin = await saisirPin('Ma Tesla', essais ? `Code incorrect. Encore ${10 - essais} essais.` : 'Tapez votre code' + (fid ? ' ou utilisez Face ID' : ''), { faceid: fid });
+    if (fini) return;
+    try {
+      const cle = await clePin(pin, unb64(L0.sel), L0.iter);
+      await dechiffrer(cle, L0.chk);
+      TOKEN = L0.pin ? await dechiffrer(cle, L0.pin) : '';
+      store.set('essais', 0); fin();
+    } catch (e) {
+      const n = essais + 1; store.set('essais', n);
+      if (n >= 10) { store.set('lock', null); store.set('token', ''); store.set('vin', ''); VIN = ''; store.set('essais', 0); fermerEcran(); toast('10 codes faux : connexion effacée par sécurité'); connexionUI(); return; }
+    }
+  }
+}
+function apresDeverrouillage() {
+  connexionUI(); majSecuUI();
+  if (live()) { toutCharger(); if (location.hash === '#gains') { gains(); pertes(); TR = null; temperature(); } }
+}
+let cache = 0;
+document.addEventListener('visibilitychange', () => {
+  if (!store.get('lock', null)) return;
+  if (document.hidden) cache = Date.now();
+  else if (deverrouille && Date.now() - cache > store.get('delaiVerrou', 60) * 1000) verrouiller();
+});
+async function demarrerSecurite() {
+  const L0 = store.get('lock', null);
+  if (L0) { verrouiller(); return; }
+  if (TOKEN) { // ancienne version : code Tessie en clair → on le protège tout de suite
+    TOKEN_EN_ATTENTE_OBLIGATOIRE = true;
+    const t = TOKEN, pin = await creerPin('Nouveau : l\'application se protège par un code. Choisissez un code à 6 chiffres.');
+    TOKEN_EN_ATTENTE_OBLIGATOIRE = false;
+    await enregistrer(t, pin); fermerEcran(); deverrouille = true;
+    await proposerFaceId(t); apresDeverrouillage(); return;
+  }
+  deverrouille = true; majSecuUI();
+}
+
+// --- Réglages → Sécurité ---
+function majSecuUI() {
+  const box = $('#secu'); if (!box) return;
+  const L0 = store.get('lock', null);
+  if (!L0) { box.innerHTML = '<div class="mut" style="font-size:14px">Le code sera demandé dès que vous connecterez Tessie.</div>'; return; }
+  const d = store.get('delaiVerrou', 60);
+  box.innerHTML = `<div class="row"><span>Code à 6 chiffres</span><b style="color:var(--ok)">Actif</b></div>
+    <div class="row"><span>Face ID</span><b style="color:${L0.cred ? 'var(--ok)' : 'var(--mut)'}">${L0.cred ? 'Actif' : 'Désactivé'}</b></div>
+    <div class="row"><span>Verrouiller après</span><select id="secDelai" style="background:var(--card2);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:8px">
+      ${[[0, 'tout de suite'], [60, '1 minute'], [300, '5 minutes'], [900, '15 minutes']].map(([v, t]) => `<option value="${v}" ${v === d ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+    <button class="btn" id="secLock">🔒 Verrouiller maintenant</button>
+    <button class="btn sec" id="secFid">${L0.cred ? 'Désactiver Face ID' : 'Activer Face ID'}</button>
+    <button class="btn sec" id="secPin">Changer le code</button>
+    <div class="mut" style="font-size:12px;margin-top:10px;line-height:1.5">Votre code Tessie est chiffré sur ce téléphone et ne peut être lu qu'avec votre code ou Face ID. Après 10 codes faux, la connexion est effacée.</div>`;
+  $('#secDelai').onchange = e => store.set('delaiVerrou', +e.target.value);
+  $('#secLock').onclick = () => verrouiller();
+  $('#secFid').onclick = async () => {
+    const L1 = store.get('lock');
+    if (L1.cred) { delete L1.cred; delete L1.fid; delete L1.prfSel; store.set('lock', L1); toast('Face ID désactivé'); majSecuUI(); }
+    else { const ok = await activerFaceId(TOKEN); toast(ok ? 'Face ID activé' : 'Face ID indisponible sur cet appareil'); majSecuUI(); }
+  };
+  $('#secPin').onclick = async () => {
+    const L1 = store.get('lock');
+    const ancien = await saisirPin('Code actuel', 'Tapez votre code actuel.', { annuler: true });
+    if (ancien === null) { fermerEcran(); return; }
+    try { await dechiffrer(await clePin(ancien, unb64(L1.sel), L1.iter), L1.chk); } catch (e) { fermerEcran(); toast('Code incorrect'); return; }
+    const n = await creerPin('Choisissez le nouveau code.');
+    if (n === null) { fermerEcran(); return; }
+    await enregistrer(TOKEN, n); fermerEcran(); toast('Code changé'); majSecuUI();
+  };
+}
+
 // ---------- Démo : historique fictif ----------
 function histoDemo() {
   const H = [['Domicile', '11 nov.', '38', '6,84'], ['Superchargeur Lyon', '8 nov.', '52', '21,32'], ['Domicile', '5 nov.', '41', '7,38'], ['Travail', '3 nov.', '30', '0,00'], ['Superchargeur Mâcon', '1 nov.', '25', '12,36']];
@@ -829,7 +1040,8 @@ function toutAfficher() { tuiles(); etat(); clim(); lim(); batterie(); carte(); 
 function toutCharger() { charger(); chargerMeteo(); chargerHistorique(); }
 
 toutAfficher(); lieux(); connexionUI(); paramsUI(); go(); if (location.hash === '#gains') { gains(); temperature(); pertes(); }
-if (live()) toutCharger(); else histoDemo();
+histoDemo();
+demarrerSecurite();
 setInterval(() => { if (live() && !document.hidden) charger(); }, 60000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && live()) charger(); });
 
