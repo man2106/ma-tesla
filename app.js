@@ -565,3 +565,5 @@ toutAfficher(); lieux(); connexionUI(); paramsUI(); go(); if (location.hash === 
 if (live()) toutCharger(); else histoDemo();
 setInterval(() => { if (live() && !document.hidden) charger(); }, 60000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && live()) charger(); });
+
+$('#maj').onclick = () => { location.replace(location.pathname + '?maj=' + Date.now() + (location.hash || '')); };
