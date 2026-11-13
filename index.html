@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ma Tesla</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Ma Tesla">
+<meta name="theme-color" content="#0b0c0e">
+<link rel="apple-touch-icon" href="icon.png">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0b0c0e;--card:#16181c;--card2:#1e2126;--line:#2a2e35;--txt:#f2f3f5;--mut:#8b929c;--acc:#3e8bff;--ok:#2ecc71;--warn:#ff9f43;--red:#ff5b5b}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{background:var(--bg);color:var(--txt);font-family:Inter,system-ui,sans-serif;padding:calc(env(safe-area-inset-top) + 14px) 16px calc(env(safe-area-inset-bottom) + 90px);max-width:520px;margin:0 auto}
+h1{font-size:22px;font-weight:700}
+h2{font-size:15px;font-weight:600;margin:22px 0 10px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em}
+.mut{color:var(--mut);font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px}
+.top{display:flex;justify-content:space-between;align-items:center}
+.demo{font-size:11px;background:#2a2410;color:#ffcf5c;padding:4px 9px;border-radius:99px;font-weight:600}
+.car{display:flex;justify-content:center;margin:10px 0 4px}
+.batt{display:flex;align-items:flex-end;gap:10px}
+.big{font-size:44px;font-weight:700;line-height:1}
+.bar{height:10px;background:var(--card2);border-radius:99px;overflow:hidden;margin-top:12px;position:relative}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,#2ecc71,#5be38f);border-radius:99px;transition:width .4s}
+.bar b{position:absolute;top:-3px;width:2px;height:16px;background:#fff8}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 8px;display:flex;flex-direction:column;align-items:center;gap:8px;font-size:12px;font-weight:500;cursor:pointer;user-select:none;transition:.15s;color:var(--txt)}
+.tile:active{transform:scale(.96)}
+.tile svg{width:26px;height:26px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.tile.on{background:#132544;border-color:#2c5cb0;color:#9cc3ff}
+.tile.busy{opacity:.5}
+.row{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
+.row:last-child{border:0}
+.sw{width:46px;height:28px;background:var(--card2);border-radius:99px;position:relative;cursor:pointer;flex:none;border:1px solid var(--line)}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:.2s}
+.sw.on{background:var(--acc);border-color:var(--acc)}.sw.on::after{left:21px}
+input[type=range]{width:100%;accent-color:var(--acc)}
+.stepper{display:flex;align-items:center;gap:14px}
+.stepper button{width:40px;height:40px;border-radius:50%;border:1px solid var(--line);background:var(--card2);color:var(--txt);font-size:22px}
+.nav{position:fixed;left:0;right:0;bottom:0;background:#0f1013ee;backdrop-filter:blur(12px);border-top:1px solid var(--line);display:flex;justify-content:space-around;padding:8px 0 calc(env(safe-area-inset-bottom) + 8px)}
+.nav a{color:var(--mut);text-decoration:none;font-size:11px;display:flex;flex-direction:column;align-items:center;gap:3px;width:25%}
+.nav a.act{color:var(--txt)}
+.nav svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.view{display:none}.view.act{display:block}
+.toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%) translateY(20px);background:#22262d;border:1px solid var(--line);padding:10px 16px;border-radius:12px;font-size:14px;opacity:0;transition:.25s;pointer-events:none;white-space:nowrap}
+.toast.show{opacity:1;transform:translateX(-50%)}
+.pill{font-size:12px;padding:3px 9px;border-radius:99px;background:var(--card2);color:var(--mut)}
+.pill.ok{background:#11331f;color:#5be38f}
+.loc{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.loc select{background:var(--card2);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:8px}
+.map{height:260px;border-radius:18px;overflow:hidden;border:1px solid var(--line);background:#12161b}
+.wx{display:flex;gap:14px;align-items:center}
+.wx .big{font-size:38px}
+.hist .row{font-size:14px}
+.btn{width:100%;padding:14px;border-radius:14px;border:0;background:var(--acc);color:#fff;font:600 15px Inter,sans-serif;margin-top:12px;cursor:pointer}
+.btn.sec{background:var(--card2);color:var(--txt);border:1px solid var(--line)}
+.stat{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.stat .card{padding:12px}
+.stat b{font-size:20px;display:block;margin-top:4px}
+</style>
+</head>
+<body>
+
+<!-- ACCUEIL -->
+<section class="view act" id="v-accueil">
+  <div class="top">
+    <div><h1 id="nom">Ma Tesla</h1><div class="mut" id="etat">Garée · Verrouillée</div></div>
+    <span class="demo" id="badge">MODE DÉMO</span>
+  </div>
+
+  <div class="car">
+    <svg viewBox="0 0 320 120" width="300" height="112">
+      <defs><linearGradient id="g" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#4a505a"/><stop offset="1" stop-color="#23272d"/></linearGradient></defs>
+      <path d="M20 82 Q22 62 52 58 L104 50 Q130 28 175 26 Q222 26 252 50 L288 58 Q304 62 304 80 L304 88 Q304 92 298 92 L26 92 Q20 92 20 86Z" fill="url(#g)"/>
+      <path d="M112 50 Q134 34 172 32 Q212 32 236 50Z" fill="#0d1a2b" opacity=".9"/>
+      <circle cx="82" cy="92" r="17" fill="#0b0c0e" stroke="#555" stroke-width="3"/>
+      <circle cx="246" cy="92" r="17" fill="#0b0c0e" stroke="#555" stroke-width="3"/>
+      <rect x="284" y="64" width="16" height="5" rx="2" fill="#fff" opacity=".7"/>
+      <ellipse cx="160" cy="112" rx="140" ry="5" fill="#000" opacity=".5"/>
+    </svg>
+  </div>
+
+  <div class="card">
+    <div class="batt"><span class="big" id="pct">72</span><span style="font-size:22px;margin-bottom:4px">%</span>
+      <span class="mut" style="margin-left:auto;margin-bottom:6px" id="auto">≈ 364 km</span></div>
+    <div class="bar"><i id="barre" style="width:72%"></i><b id="repere" style="left:80%"></b></div>
+    <div class="mut" style="margin-top:8px" id="limTxt">Limite de charge : 80 %</div>
+  </div>
+
+  <h2>Commandes</h2>
+  <div class="grid" id="tuiles"></div>
+
+  <h2>Intérieur</h2>
+  <div class="card">
+    <div class="loc"><div><div style="font-weight:600">Climatisation</div><div class="mut" id="climEtat">Arrêtée · Intérieur 14 °C</div></div><div class="sw" id="swClim"></div></div>
+    <div class="loc" style="margin-top:14px"><span class="mut">Température voulue</span>
+      <div class="stepper"><button data-t="-1">−</button><b id="temp">21,0 °C</b><button data-t="1">+</button></div></div>
+  </div>
+</section>
+
+<!-- CHARGE -->
+<section class="view" id="v-charge">
+  <div class="top"><h1>Charge</h1><span class="pill" id="chargeEtat">Non branchée</span></div>
+  <div class="card" style="margin-top:16px">
+    <div class="loc"><span>Limite de charge</span><b id="limVal">80 %</b></div>
+    <input type="range" min="50" max="100" value="80" id="limRange" style="margin-top:12px">
+    <div class="loc mut" style="margin-top:4px"><span>Quotidien</span><span>Voyage</span></div>
+  </div>
+
+  <h2>Limite selon le lieu</h2>
+  <div class="card">
+    <div class="loc"><div><div style="font-weight:600">Activer</div><div class="mut">La limite change toute seule selon l'endroit où vous êtes</div></div><div class="sw on" id="swLieu"></div></div>
+    <div id="lieux" style="margin-top:6px"></div>
+    <button class="btn sec" id="ajLieu">+ Ajouter la position actuelle de la voiture</button>
+  </div>
+
+  <h2>Ce mois-ci</h2>
+  <div class="stat">
+    <div class="card"><span class="mut">Énergie</span><b id="mE">186 kWh</b></div>
+    <div class="card"><span class="mut">Coût total</span><b id="mC">47,90 €</b></div>
+  </div>
+
+  <h2>Historique des recharges</h2>
+  <div class="card hist" id="hist"></div>
+</section>
+
+<!-- CARTE -->
+<section class="view" id="v-carte">
+  <h1>Position & météo</h1>
+  <div class="mut" style="margin:4px 0 14px" id="posTxt">Garée · Domicile</div>
+  <div class="map">
+    <svg viewBox="0 0 400 260" width="100%" height="100%" preserveAspectRatio="xMidYMid slice">
+      <rect width="400" height="260" fill="#12161b"/>
+      <g stroke="#1f262e" stroke-width="14" fill="none"><path d="M-10 70 H410"/><path d="M-10 190 H410"/><path d="M90 -10 V270"/><path d="M290 -10 V270"/></g>
+      <g stroke="#2a333d" stroke-width="22" fill="none"><path d="M-10 130 Q200 100 410 140"/></g>
+      <rect x="110" y="10" width="160" height="45" rx="6" fill="#16201a"/><rect x="310" y="150" width="80" height="30" rx="6" fill="#16201a"/>
+      <circle cx="200" cy="140" r="34" fill="#3e8bff" opacity=".15"/>
+      <circle cx="200" cy="140" r="11" fill="#3e8bff" stroke="#fff" stroke-width="3"/>
+    </svg>
+  </div>
+  <div class="card" style="margin-top:12px">
+    <div class="wx"><span style="font-size:40px" id="wxI">⛅</span><div><span class="big" id="wxT">9°</span></div><div class="mut" id="wxD">Nuageux<br>Min 4° · Max 11°</div></div>
+  </div>
+  <a class="btn sec" id="plans" style="display:block;text-align:center;text-decoration:none" href="https://maps.apple.com/?q=Ma%20Tesla">Ouvrir dans Plans</a>
+  <button class="btn" id="phares">Faire clignoter les phares</button>
+  <button class="btn sec" id="klax">Klaxonner</button>
+</section>
+
+<!-- RÉGLAGES -->
+<section class="view" id="v-reglages">
+  <h1>Réglages</h1>
+  <h2>Sécurité</h2>
+  <div class="card">
+    <div class="row"><div><div style="font-weight:600">Sentinelle automatique</div><div class="mut">S'active toute seule quand la voiture est garée</div></div><div class="sw on" id="swSentAuto"></div></div>
+    <div class="row"><div><div style="font-weight:600">Sauf à la maison</div><div class="mut">Ne pas l'activer au domicile</div></div><div class="sw on" id="swSentMaison"></div></div>
+  </div>
+  <h2>Connexion Tessie</h2>
+  <div class="card">
+    <div class="mut" style="margin-bottom:8px" id="cxEtat">Non connectée — mode démo</div>
+    <input id="tok" type="password" placeholder="Collez ici votre code d'accès Tessie" autocomplete="off" style="width:100%;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--card2);color:var(--txt);font:15px Inter,sans-serif">
+    <select id="vins" style="display:none;width:100%;margin-top:10px;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--card2);color:var(--txt)"></select>
+    <button class="btn" id="cx">Se connecter</button>
+    <button class="btn sec" id="dx" style="display:none">Se déconnecter</button>
+  </div>
+  <h2>À propos</h2>
+  <div class="card mut" style="font-size:14px;line-height:1.5">
+    Le code d'accès reste uniquement sur ce téléphone. La Sentinelle automatique et la limite selon le lieu s'appliquent quand l'application est ouverte.
+  </div>
+</section>
+
+<div class="toast" id="toast"></div>
+
+<nav class="nav">
+  <a href="#accueil" class="act" data-v="accueil"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Accueil</a>
+  <a href="#charge" data-v="charge"><svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>Charge</a>
+  <a href="#carte" data-v="carte"><svg viewBox="0 0 24 24"><path d="M12 21s-7-6.5-7-12a7 7 0 0 1 14 0c0 5.5-7 12-7 12z"/><circle cx="12" cy="9" r="2.5"/></svg>Carte</a>
+  <a href="#reglages" data-v="reglages"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Réglages</a>
+</nav>
+
+<script src="app.js"></script>
+</body>
+</html>
