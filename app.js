@@ -9,6 +9,7 @@ const store = {
 let TOKEN = store.get('lock', null) ? '' : store.get('token', '');
 let VIN = store.get('vin', '');
 const live = () => !!(TOKEN && VIN);
+let STATS = null;
 
 const S = { verrou: true, sentinelle: false, coffre: false, frunk: false, trappe: false, aerer: false,
   clim: false, temp: 21, lim: 80, pct: 72, autoKm: 364, inside: 14, lat: null, lon: null, gear: null, nom: 'Ma Tesla' };
@@ -53,6 +54,14 @@ async function charger() {
     if (cl.inside_temp != null) S.inside = cl.inside_temp;
     S.lat = dr.latitude; S.lon = dr.longitude; S.gear = dr.shift_state;
     S.etatCar = d.state;
+    S.version = v.car_version ? String(v.car_version).split(' ')[0] : null;
+    if (v.odometer != null) S.odo = v.odometer * 1.609344;
+    S.pneus = [v.tpms_pressure_fl, v.tpms_pressure_fr, v.tpms_pressure_rl, v.tpms_pressure_rr];
+    S.ext = cl.outside_temp;
+    S.portes = !!(v.df || v.dr || v.pf || v.pr);
+    if (c.battery_range != null && c.battery_level > 0) S.km100 = c.battery_range * 1.609344 / c.battery_level * 100;
+    S.amp = c.charger_actual_current; S.volt = c.charger_voltage;
+    S.maj = new Date();
     toutAfficher();
     automatismes();
     $('#cxEtat').textContent = 'Connectée à ' + S.nom + ' · mise à jour ' + new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
@@ -111,7 +120,7 @@ const ico = {
   aerer: '<path d="M4 8h12a3 3 0 1 0-3-3"/><path d="M4 12h16"/><path d="M4 16h10a3 3 0 1 1-3 3"/>'
 };
 const T = [
-  ['verrou', () => S.verrou ? 'Verrouillée' : 'Déverrouillée', () => S.verrou ? 'unlock' : 'lock', () => S.verrou = !S.verrou, () => S.verrou ? 'Voiture verrouillée' : 'Voiture déverrouillée'],
+  ['verrou', () => S.verrou ? 'Verrou' : 'Ouvert', () => S.verrou ? 'unlock' : 'lock', () => S.verrou = !S.verrou, () => S.verrou ? 'Voiture verrouillée' : 'Voiture déverrouillée'],
   ['sentinelle', () => 'Sentinelle', () => S.sentinelle ? 'disable_sentry' : 'enable_sentry', () => S.sentinelle = !S.sentinelle, () => S.sentinelle ? 'Sentinelle activée' : 'Sentinelle désactivée'],
   ['coffre', () => 'Coffre', () => 'activate_rear_trunk', () => S.coffre = !S.coffre, () => S.coffre ? 'Coffre ouvert' : 'Coffre fermé'],
   ['frunk', () => 'Frunk', () => 'activate_front_trunk', () => S.frunk = true, () => 'Frunk ouvert'],
@@ -137,6 +146,16 @@ function etat() {
   if (S.sentinelle) st.push('Sentinelle');
   if (S.charge === 'Charging') st.push('En charge');
   $('#etat').textContent = st.join(' · ');
+  const p = (t, c) => `<span class="pill2" style="${c || ''}">${t}</span>`;
+  const bleu = 'background:#16212f;color:#9cc3ff', rouge = 'background:#2a1618;color:#ff9b9b', vert = 'background:#11331f;color:#5be38f';
+  const ici = typeof lieuActuel === 'function' ? lieuActuel() : null;
+  $('#pills').innerHTML = p((S.gear && S.gear !== 'P' ? 'En route' : 'Garée') + (ici ? ' · ' + esc(ici[1]) : ''), bleu)
+    + p(S.verrou ? 'Verrouillée' : 'Déverrouillée', S.verrou ? bleu : rouge)
+    + (S.sentinelle ? p('Sentinelle', rouge) : '')
+    + p(S.charge === 'Charging' ? 'En charge' : S.charge && S.charge !== 'Disconnected' ? 'Branchée' : 'Débranchée', S.charge === 'Charging' ? vert : '')
+    + p(S.portes ? 'Porte ouverte' : 'Portes fermées', S.portes ? rouge : '')
+    + (S.aerer ? p('Fenêtres ouvertes', rouge) : '') + (S.clim ? p('Clim en marche', bleu) : '');
+  $('#majTxt').textContent = (S.maj ? 'màj ' + S.maj.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : 'exemple') + (S.version ? ' · ' + S.version : '');
   $('#nom').textContent = S.nom;
 }
 
@@ -160,7 +179,12 @@ document.querySelectorAll('[data-t]').forEach(b => b.onclick = () => {
 
 // ---------- Charge ----------
 function batterie() {
-  $('#pct').textContent = S.pct; $('#barre').style.width = S.pct + '%'; $('#auto').textContent = '≈ ' + S.autoKm + ' km';
+  $('#pct').textContent = Math.round(S.pct); $('#barre').style.width = S.pct + '%'; $('#auto').textContent = S.autoKm + ' km';
+  $('#auto100').textContent = '100 % = ' + (S.km100 ? Math.round(S.km100) : '—') + ' km';
+  const info = (l, v) => `<div style="font-size:11px;color:var(--mut)">${l}<br><b class="mono" style="font-size:13px;color:var(--txt)">${v}</b></div>`;
+  const kw = S.charge === 'Charging' && S.amp && S.volt ? S.amp * S.volt / 1000 : (typeof P !== 'undefined' ? P.prise : 2.8);
+  $('#battInfos').innerHTML = info('Limite', S.lim + '%') + info(S.charge === 'Charging' ? 'Charge' : 'Prise', fr(kw, 1) + ' kW')
+    + info('Conso', (STATS && STATS.whkm ? Math.round(STATS.whkm) : '—') + ' Wh') + info('Km total', S.odo ? Math.round(S.odo).toLocaleString('fr-FR') : '—');
   const ce = $('#chargeEtat');
   const lib = { Charging: 'En charge' + (S.puissance ? ' · ' + S.puissance + ' kW' : ''), Complete: 'Charge terminée', Stopped: 'Branchée · en pause', Disconnected: 'Non branchée' };
   ce.textContent = lib[S.charge] || (live() ? 'Non branchée' : 'Non branchée');
@@ -257,7 +281,7 @@ $('#cx').onclick = async () => {
 function choisir(vin) {
   VIN = vin; store.set('vin', vin); TR = null; $('#vins').style.display = 'none'; $('#tok').value = '';
   if (!store.get('lieux', null)) L.length = 0;
-  sauverLieux(); lieux(); connexionUI(); toast('Voiture connectée'); toutCharger();
+  sauverLieux(); lieux(); connexionUI(); toast('Voiture connectée'); toutCharger(); accueilMaj();
 }
 $('#dx').onclick = () => { TOKEN = ''; VIN = ''; TR = null; store.set('token', ''); store.set('vin', ''); oublierToken(); connexionUI(); toast('Déconnectée'); };
 
@@ -438,7 +462,7 @@ async function chargesDuJour(jour) {
 }
 $('#hwFile').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
-  try { const n = lireCSV(await f.text()); fusionner(n); hwAfficher(); gains(); toast(n.length + ' lignes importées'); }
+  try { const n = lireCSV(await f.text()); fusionner(n); hwAfficher(); gains(); solMoisAfficher(); toast(n.length + ' lignes importées'); }
   catch (er) { toast('Import impossible : ' + er.message); }
   e.target.value = '';
 };
@@ -466,7 +490,7 @@ function histAfficher() {
   box.innerHTML = `<b style="color:var(--txt)">${esc((HIST.sources || []).join(', ') || 'Historique')}</b> · du ${f(Math.min(...all))} au ${f(Math.max(...all))}<br>${HIST.drives.length} trajets · ${HIST.charges.length} recharges · ${HIST.idles.length} périodes à l'arrêt<br><span style="font-size:12px">Fusionné avec Tessie : quand les deux ont la même recharge ou le même trajet, celui de Tessie est gardé.</span>`;
   $('#histSuppr').style.display = '';
 }
-function rafraichirTout() { TR = null; for (const k in cacheCh) delete cacheCh[k]; histAfficher(); gains(); temperature(); pertes(); }
+function rafraichirTout() { accueilMaj(); TR = null; for (const k in cacheCh) delete cacheCh[k]; histAfficher(); gains(); temperature(); pertes(); }
 $('#histFile').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
   try {
@@ -604,7 +628,7 @@ async function prevision() {
       const r = await fetch(u); if (!r.ok) throw new Error('météo indisponible');
       const d = await r.json(); c = { t: Date.now(), la, h: d.hourly }; store.set('meteo', c);
     }
-    SOL = calculerSoleil(c.h); solAfficher();
+    SOL = calculerSoleil(c.h); solAfficher(); solMiniAfficher();
   } catch (e) { $('#solResume').innerHTML = '<div class="mut">Prévision indisponible : ' + msgErreur(e) + '</div>'; }
 }
 function calculerSoleil(h) {
@@ -805,6 +829,98 @@ async function pertes() {
   } else $('#pDetail').textContent = 'Touchez une barre pour le détail.';
 }
 
+// ---------- Accueil : économies + cockpit ----------
+async function collecter(a, b) {
+  if (live()) {
+    const [c, d, i] = await Promise.all([
+      api(`/${VIN}/charges?from=${a}&to=${b}&distance_format=km&format=json&superchargers_only=false`),
+      api(`/${VIN}/drives?from=${a}&to=${b}&distance_format=km&format=json`),
+      api(`/${VIN}/idles?from=${a}&to=${b}&format=json`).catch(() => ({ results: [] }))]);
+    return { charges: fusion(c.results, HIST.charges, a, b), drives: fusion(d.results, HIST.drives, a, b), idles: fusion(i.results, HIST.idles, a, b) };
+  }
+  if (aHist()) return { charges: dansPeriode(HIST.charges, a, b), drives: dansPeriode(HIST.drives, a, b), idles: dansPeriode(HIST.idles, a, b) };
+  return null;
+}
+function calculerStats(D) {
+  const r = analyser(D.charges, D.drives);
+  let tot = 0, sen = 0, senH = 0, t0 = Infinity, t1 = 0;
+  D.idles.forEach(x => {
+    let e = x.energy_used ?? ((x.starting_battery - x.ending_battery) / 100 * P.batt); e = Number.isFinite(e) ? Math.max(0, e) : 0;
+    const fs = Math.min(1, x.sentry_fraction || 0), fc = Math.min(1 - fs, x.climate_fraction || 0), h = ((x.ended_at || 0) - (x.started_at || 0)) / 3600;
+    tot += e; sen += fs ? Math.min(e, e * fs * 8 / (fs * 8 + fc * 10 + (1 - fs - fc))) : 0; senH += h * fs;
+    t0 = Math.min(t0, x.started_at); t1 = Math.max(t1, x.ended_at || x.started_at);
+  });
+  const jIdle = Math.max(1, (t1 - t0) / 86400), jours = r.t0 ? Math.max(1, (r.t1 - r.t0) / 86400) : 1;
+  const eDrives = D.drives.reduce((s, x) => s + (x.energy_used || 0), 0);
+  return { ...r, gain: r.ess - r.elec, jours, whkm: r.km ? eDrives * 1000 / r.km : null, perteJ: D.idles.length ? tot / jIdle : null,
+    senPart: tot ? sen / tot : 0, senJ: D.idles.length ? senH / jIdle : null, senKwhJ: D.idles.length ? sen / jIdle : 0 };
+}
+let accEnCours = false;
+async function accueilMaj() {
+  if (accEnCours) return; accEnCours = true;
+  try {
+    const to = Math.floor(Date.now() / 1000), from = P.achat ? Math.floor(new Date(P.achat) / 1000) : to - 365 * 86400;
+    const D = await collecter(from, to);
+    STATS = D ? calculerStats(D) : { gain: 210, jours: 49, km: 3531, solKwh: 24, resKwh: 76, kwhTot: 100, elec: 258, ess: 470, whkm: 208, perteJ: 1.1, senPart: .85, senJ: 4, senKwhJ: .9, demo: true };
+  } catch (e) { STATS = null; $('#heroSous').textContent = 'Données indisponibles : ' + msgErreur(e); }
+  accEnCours = false;
+  accueilAfficher(); batterie();
+}
+function accueilAfficher() {
+  const s = STATS; if (!s) return;
+  const sem = Math.max(1, Math.round(s.jours / 7));
+  $('#heroEur').textContent = eur(s.gain);
+  const dom = s.solKwh + s.resKwh;
+  $('#heroSous').textContent = `en ${sem} semaine${sem > 1 ? 's' : ''} · ${Math.round(s.km).toLocaleString('fr-FR')} km · ${dom ? Math.round(s.solKwh / dom * 100) : 0} % au soleil${s.demo ? ' (exemple)' : ''}`;
+  const c100 = s.km ? s.elec / s.km * 100 : null, e100 = P.conso * P.essence;
+  const t = (l, v, sub, col) => `<div class="mini"><div class="ml">${l}</div><div class="mv" style="color:${col || 'var(--txt)'}">${v}</div><div class="ms">${sub}</div></div>`;
+  const ici = lieuActuel();
+  $('#miniTuiles').innerHTML =
+    t('Économisé / mois', eur(s.gain / s.jours * 30.4), 'vs essence', 'var(--ok)')
+    + t('Coût / 100 km', c100 != null ? eur(c100) : '—', 'essence ' + eur(e100))
+    + t('Part solaire', (dom ? Math.round(s.solKwh / dom * 100) : 0) + ' %', 'recharges maison', '#f5c542')
+    + t('Perdu garée', s.perteJ != null ? fr(s.perteJ, 1) + ' kWh' : '—', 'par jour', '#ffb36b')
+    + t('Sentinelle', s.senJ != null ? fr(s.senJ, 1) + ' h/j' : '—', Math.round(s.senPart * 100) + ' % des pertes', '#ff9b9b')
+    + t('Km / jour', Math.round(s.km / s.jours), Math.round(s.km).toLocaleString('fr-FR') + ' km')
+    + t('Intérieur', Math.round(S.inside) + ' °C', S.clim ? 'clim en marche' : 'clim arrêtée', '#9cc3ff')
+    + t('Extérieur', S.ext != null ? Math.round(S.ext) + ' °C' : '—', ici ? esc(ici[1]) : 'autour de la voiture', '#9cc3ff')
+    + t('kWh réseau', fr(P.reseau, 2) + ' €', 'soleil ' + fr(P.solaire, 2) + ' €');
+  const pn = (S.pneus || []).map(x => x != null ? fr(x, 2) : '—');
+  $('#pneus').innerHTML = (pn.length ? pn : ['—', '—', '—', '—']).map(x => `<span>${x}</span>`).join('');
+  actionsAfficher(); solMoisAfficher();
+}
+function actionsAfficher() {
+  const s = STATS || {}, L2 = [];
+  const a = (ic, col, bg, bd, titre, sous, gain) => `<div class="action" style="background:${bg};border-color:${bd}"><span style="font-size:22px;color:${col}">${ic}</span><span style="flex:1"><b style="font-weight:600">${titre}</b><br><span style="font-size:13px;color:${col}">${sous}</span></span><b style="color:var(--ok);white-space:nowrap">${gain}</b></div>`;
+  if (SOL && SOL.length) {
+    const now = new Date().getHours(); const J = SOL[0].best && SOL[0].best.b > now ? [SOL[0], 'aujourd\'hui'] : SOL[1] && SOL[1].best ? [SOL[1], 'demain'] : null;
+    if (J) L2.push(a('☀', '#c9bf98', '#17150c', '#4a3f14', `Branchez ${J[1]} de ${J[0].best.a} h à ${J[0].best.b} h`, `${fr(J[0].voiture, 1)} kWh de soleil · ${fr(J[0].voiture * 1000 / P.wh, 0)} km`, '+' + eur(J[0].voiture * (P.reseau - P.solaire))));
+  }
+  if (s.senPart > .35) L2.push(a('◉', '#ffb3b3', '#2a1618', '#6a2a2e', 'Coupez la Sentinelle à la maison', Math.round(s.senPart * 100) + ' % de vos pertes garée', '≈ ' + eur(s.senKwhJ * 365 * P.reseau * .6) + '/an'));
+  const dom = (s.solKwh || 0) + (s.resKwh || 0);
+  if (dom && s.resKwh / dom > .5) L2.push(a('☾', '#9cc3ff', 'var(--card)', 'var(--line)', 'Chargez plus en journée', Math.round(s.resKwh / dom * 100) + ' % des recharges maison le soir', '≈ ' + eur(s.resKwh * .3 / s.jours * 365 * (P.reseau - P.solaire)) + '/an'));
+  const bas = (S.pneus || []).filter(x => x != null && x < 2.75);
+  if (bas.length) L2.push(a('◎', '#ffb36b', 'var(--card)', 'var(--line)', 'Regonflez les pneus', bas.length + ' pneu(s) sous 2,75 bar : consommation en hausse', 'sécurité'));
+  if ((HIST.sources || []).includes('TeslaFi') && live()) L2.push(a('▭', '#9aa1ab', 'var(--card)', 'var(--line)', 'Un seul abonnement', 'Tessie suffit, TeslaFi fait doublon', '≈ 90 €/an'));
+  $('#actions').innerHTML = L2.length ? L2.join('') : '<div class="mut">Rien à signaler : tout est optimisé 👍</div>';
+}
+function solMiniAfficher() {
+  if (!SOL || !SOL.length) return;
+  const J = SOL[0], hs = J.hs.filter(x => x.h >= 7 && x.h <= 18), max = Math.max(...hs.map(x => x.prod), .5);
+  $('#solBars').innerHTML = hs.map(x => `<div style="flex:1;border-radius:2px 2px 0 0;height:${Math.max(1, x.prod / max * 30)}px;background:${x.bon ? 'var(--ok)' : '#c9a227'}"></div>`).join('');
+  $('#solTxt').textContent = J.best ? `${J.best.a}–${J.best.b} h · ${fr(J.voiture, 1)} kWh · +${eur(J.voiture * (P.reseau - P.solaire))}` : `${fr(J.prod, 1)} kWh prévus · trop peu pour la prise`;
+  actionsAfficher();
+}
+function solMoisAfficher() {
+  const box = $('#solMois'); if (HW.length < 2) { box.style.display = 'none'; return; }
+  const g = grouper(intervalles(), cleMois), ks = Object.keys(g).sort().slice(-9), max = Math.max(...ks.map(k => g[k].exp), 1);
+  const tot = ks.reduce((s, k) => s + g[k].exp, 0);
+  box.style.display = '';
+  box.innerHTML = `<div style="display:flex;justify-content:space-between;font-size:13px" class="mut"><span>Soleil renvoyé au réseau</span><span>kWh / mois</span></div>
+    <div style="display:flex;align-items:flex-end;gap:6px;height:90px;margin-top:10px">${ks.map(k => `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px"><div style="width:100%;border-radius:4px 4px 0 0;background:#f5a623;height:${Math.max(2, g[k].exp / max * 70)}px"></div><span style="font-size:10px" class="mut">${new Date(k + '-01T12:00').toLocaleDateString('fr-FR', { month: 'short' }).replace('.', '')}</span></div>`).join('')}</div>
+    <div style="font-size:13px;color:#c7ccd3;margin-top:8px">${fr(tot, 0)} kWh renvoyés, de quoi rouler ≈ ${Math.round(tot * 1000 / P.wh).toLocaleString('fr-FR')} km.</div>`;
+}
+
 $('#periode').onchange = () => { gains(); pertes(); };
 histAfficher();
 hwAfficher();
@@ -966,7 +1082,7 @@ async function verrouiller() {
   }
 }
 function apresDeverrouillage() {
-  connexionUI(); majSecuUI();
+  connexionUI(); majSecuUI(); accueilMaj();
   if (live()) { toutCharger(); if (location.hash === '#gains') { gains(); pertes(); TR = null; temperature(); } }
 }
 let cache = 0;
@@ -1034,13 +1150,14 @@ function go() {
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('act', a.dataset.v === ok));
   window.scrollTo(0, 0);
 }
-addEventListener('hashchange', () => { go(); if (location.hash === '#gains') { gains(); temperature(); pertes(); } });
+addEventListener('hashchange', () => { go(); if ((location.hash || '#accueil') === '#accueil') accueilAfficher(); if (location.hash === '#gains') { gains(); temperature(); pertes(); } });
 
 function toutAfficher() { tuiles(); etat(); clim(); lim(); batterie(); carte(); }
 function toutCharger() { charger(); chargerMeteo(); chargerHistorique(); }
 
 toutAfficher(); lieux(); connexionUI(); paramsUI(); go(); if (location.hash === '#gains') { gains(); temperature(); pertes(); }
 histoDemo();
+accueilMaj();
 demarrerSecurite();
 setInterval(() => { if (live() && !document.hidden) charger(); }, 60000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && live()) charger(); });
