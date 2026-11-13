@@ -14,7 +14,8 @@ const S = { verrou: true, sentinelle: false, coffre: false, frunk: false, trappe
   clim: false, temp: 21, lim: 80, pct: 72, autoKm: 364, inside: 14, lat: null, lon: null, gear: null, nom: 'Ma Tesla' };
 
 function toast(t) { const e = $('#toast'); e.textContent = t; e.classList.add('show'); clearTimeout(e._t); e._t = setTimeout(() => e.classList.remove('show'), 2200); }
-const fr = (n, d = 1) => Number(n).toFixed(d).replace('.', ',');
+const fr = (n, d = 1) => (Number.isFinite(+n) ? Number(n) : 0).toFixed(d).replace('.', ',');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
 // ---------- Appels Tessie ----------
 async function api(path, method = 'GET') {
@@ -68,7 +69,7 @@ async function chargerMeteo() {
     const cond = w.condition || w.description || '';
     $('#wxI').textContent = /rain|pluie|drizzle/i.test(cond) ? '🌧️' : /snow|neige/i.test(cond) ? '❄️' : /clear|sun|soleil/i.test(cond) ? '☀️' : '⛅';
     const lo = w.min_temperature ?? w.temp_min, hi = w.max_temperature ?? w.temp_max;
-    $('#wxD').innerHTML = (traduire(cond) || 'Météo actuelle') + (lo != null && hi != null ? `<br>Min ${Math.round(lo)}° · Max ${Math.round(hi)}°` : '') + (w.location ? `<br>${w.location}` : '');
+    $('#wxD').innerHTML = (traduire(cond) || 'Météo actuelle') + (lo != null && hi != null ? `<br>Min ${Math.round(lo)}° · Max ${Math.round(hi)}°` : '') + (w.location ? `<br>${esc(w.location)}` : '');
   } catch (e) {}
 }
 function traduire(c) {
@@ -87,10 +88,11 @@ async function chargerHistorique() {
     $('#hist').innerHTML = list.map(h => {
       const t = new Date((h.started_at || h.start_date || 0) * 1000);
       const kwh = h.energy_added ?? h.energy_used ?? 0;
-      const prix = h.cost ?? 0;
+      const dom = estDomicile(h), hh = t.getHours();
+      const prix = h.cost > 0 ? h.cost : dom ? kwh * (hh >= 9 && hh < 16 ? P.solaire : P.reseau) : kwh * P.superc;
       if (t >= debutMois) { e += kwh; cost += prix; }
-      const lieu = h.location || h.saved_location || (h.is_supercharger ? 'Superchargeur' : 'Recharge');
-      return `<div class="row"><div><div>${lieu}</div><div class="mut">${t.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })} · ${fr(kwh, 0)} kWh</div></div><b>${fr(prix, 2)} €</b></div>`;
+      const lieu = (dom ? '🏠 ' : '⚡ ') + (h.saved_location || h.location || (h.is_supercharger ? 'Superchargeur' : 'Recharge'));
+      return `<div class="row"><div><div>${esc(lieu)}</div><div class="mut">${t.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })} · ${fr(kwh, 0)} kWh</div></div><b>${fr(prix, 2)} €</b></div>`;
     }).join('');
     $('#mE').textContent = fr(e, 0) + ' kWh'; $('#mC').textContent = fr(cost, 2) + ' €';
   } catch (er) { $('#hist').innerHTML = '<div class="mut">Historique indisponible : ' + msgErreur(er) + '</div>'; }
@@ -172,7 +174,7 @@ const L = store.get('lieux', live() ? [] : [['🏠', 'Domicile', 80, null, null]
 let lieuxOn = store.get('lieuxOn', true);
 function lieux() {
   $('#swLieu').classList.toggle('on', lieuxOn);
-  $('#lieux').innerHTML = L.length ? L.map((l, i) => `<div class="row"><span>${l[0]} <span contenteditable="true" data-n="${i}" style="outline:none;border-bottom:1px dashed var(--line)">${l[1]}</span></span><span style="display:flex;gap:8px;align-items:center"><select data-l="${i}">${[50, 60, 70, 80, 90, 100].map(v => `<option ${v === l[2] ? 'selected' : ''}>${v}</option>`).join('')}</select><span data-x="${i}" style="color:var(--mut);cursor:pointer;padding:4px">✕</span></span></div>`).join('')
+  $('#lieux').innerHTML = L.length ? L.map((l, i) => `<div class="row"><span>${l[0]} <span contenteditable="true" data-n="${i}" style="outline:none;border-bottom:1px dashed var(--line)">${esc(l[1])}</span></span><span style="display:flex;gap:8px;align-items:center"><select data-l="${i}">${[50, 60, 70, 80, 90, 100].map(v => `<option ${v === l[2] ? 'selected' : ''}>${v}</option>`).join('')}</select><span data-x="${i}" style="color:var(--mut);cursor:pointer;padding:4px">✕</span></span></div>`).join('')
     : '<div class="mut" style="padding:10px 0">Garez la voiture à un endroit (maison, travail…), puis touchez le bouton ci-dessous.</div>';
 }
 function sauverLieux() { store.set('lieux', L); }
@@ -200,9 +202,10 @@ async function automatismes() {
     dejaFait.lim = ici[1] + ici[2];
     try { await cmd('set_charge_limit', 'percent=' + ici[2]); S.lim = ici[2]; lim(); toast(ici[1] + ' : limite passée à ' + ici[2] + ' %'); } catch (e) {}
   }
-  const sentAuto = store.get('sentAuto', true), sentMaison = store.get('sentMaison', true);
+  const sentAuto = store.get('sentAuto', false), sentMaison = store.get('sentMaison', true);
   const maison = ici && /domicile|maison/i.test(ici[1]);
-  if (sentAuto && garee && !S.sentinelle && !(sentMaison && maison) && dejaFait.sent !== 'on') {
+  const maisonConnue = L.some(l => l[3] != null && /domicile|maison/i.test(l[1]));
+  if (sentAuto && garee && S.lat != null && !S.sentinelle && !(sentMaison && (maison || !maisonConnue)) && dejaFait.sent !== 'on') {
     dejaFait.sent = 'on';
     try { await cmd('enable_sentry'); S.sentinelle = true; tuiles(); etat(); toast('Sentinelle activée automatiquement'); } catch (e) {}
   }
@@ -221,9 +224,12 @@ $('#phares').onclick = async () => { try { await cmd('flash'); toast('Phares all
 $('#klax').onclick = async () => { try { await cmd('honk'); toast('Coup de klaxon envoyé'); } catch (er) { toast('Échec : ' + msgErreur(er)); } };
 
 // ---------- Réglages ----------
-[['#swSentAuto', 'sentAuto'], ['#swSentMaison', 'sentMaison']].forEach(([id, k]) => {
-  $(id).classList.toggle('on', store.get(k, true));
-  $(id).onclick = e => { const v = !store.get(k, true); store.set(k, v); e.currentTarget.classList.toggle('on', v); };
+[['#swSentAuto', 'sentAuto', false], ['#swSentMaison', 'sentMaison', true]].forEach(([id, k, def]) => {
+  $(id).classList.toggle('on', store.get(k, def));
+  $(id).onclick = e => {
+    const v = !store.get(k, def); store.set(k, v); e.currentTarget.classList.toggle('on', v);
+    if (k === 'sentAuto' && v && !L.some(l => l[3] != null && /domicile|maison/i.test(l[1]))) toast('Ajoutez d\'abord votre « Domicile » dans Charge → Limite selon le lieu');
+  };
 });
 function connexionUI() {
   $('#badge').style.display = live() ? 'none' : '';
@@ -243,7 +249,7 @@ $('#cx').onclick = async () => {
     store.set('token', TOKEN);
     if (list.length === 1) { choisir(list[0].vin); return; }
     const sel = $('#vins'); sel.style.display = '';
-    sel.innerHTML = '<option value="">Choisissez la voiture</option>' + list.map(v => `<option value="${v.vin}">${v.nom}</option>`).join('');
+    sel.innerHTML = '<option value="">Choisissez la voiture</option>' + list.map(v => `<option value="${esc(v.vin)}">${esc(v.nom)}</option>`).join('');
     sel.onchange = () => sel.value && choisir(sel.value);
     $('#cxEtat').textContent = 'Choisissez votre voiture';
   } catch (e) { TOKEN = ''; $('#cxEtat').textContent = 'Échec de la connexion : ' + msgErreur(e); }
@@ -302,10 +308,11 @@ function resolutionMin() {
 }
 // Part réseau d'une recharge : ce que la maison a pris au réseau pendant la charge (prudent)
 function partReseau(debut, fin, kwh) {
-  if (resolutionMin() > 60 || !fin || fin <= debut) return null;
+  if (!fin || fin <= debut || HW.length < 2) return null;
   const iv = intervalles(); let imp = 0, couvert = 0;
   for (const x of iv) {
     const o = Math.min(fin, x.b) - Math.max(debut, x.a); if (o <= 0) continue;
+    if (x.b - x.a > 61 * 60000) return null;
     const f = o / (x.b - x.a); imp += x.imp * f; couvert += o;
   }
   if (couvert < (fin - debut) * 0.8) return null;
@@ -456,7 +463,7 @@ function histAfficher() {
   if (!aHist()) { box.innerHTML = 'Aucun historique importé.'; $('#histSuppr').style.display = 'none'; return; }
   const all = [...HIST.drives, ...HIST.charges, ...HIST.idles].map(x => x.started_at);
   const f = t => new Date(t * 1000).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
-  box.innerHTML = `<b style="color:var(--txt)">${(HIST.sources || []).join(', ') || 'Historique'}</b> · du ${f(Math.min(...all))} au ${f(Math.max(...all))}<br>${HIST.drives.length} trajets · ${HIST.charges.length} recharges · ${HIST.idles.length} périodes à l'arrêt<br><span style="font-size:12px">Fusionné avec Tessie : quand les deux ont la même recharge ou le même trajet, celui de Tessie est gardé.</span>`;
+  box.innerHTML = `<b style="color:var(--txt)">${esc((HIST.sources || []).join(', ') || 'Historique')}</b> · du ${f(Math.min(...all))} au ${f(Math.max(...all))}<br>${HIST.drives.length} trajets · ${HIST.charges.length} recharges · ${HIST.idles.length} périodes à l'arrêt<br><span style="font-size:12px">Fusionné avec Tessie : quand les deux ont la même recharge ou le même trajet, celui de Tessie est gardé.</span>`;
   $('#histSuppr').style.display = '';
 }
 function rafraichirTout() { TR = null; for (const k in cacheCh) delete cacheCh[k]; histAfficher(); gains(); temperature(); pertes(); }
@@ -519,7 +526,7 @@ function analyser(charges, drives) {
       const res = partReseau(deb, fin, kwh);
       if (res != null) { resKwh += res; solKwh += kwh - res; mesure++; }
       else { const h = new Date(deb).getHours(); if (h >= 9 && h < 16) solKwh += kwh; else resKwh += kwh; }
-    } else { autreKwh += kwh; autreEur += c.cost ?? (c.energy_added ?? kwh) * P.superc; }
+    } else { autreKwh += kwh; autreEur += c.cost > 0 ? c.cost : (c.energy_added ?? kwh) * P.superc; }
   });
   drives.forEach(d => { km += d.odometer_distance ?? d.distance ?? 0; });
   const tous = charges.concat(drives); const t0 = tous.length ? Math.min(...tous.map(x => x.started_at)) : null, t1 = tous.length ? Math.max(...tous.map(x => x.ended_at || x.started_at)) : null;
@@ -732,7 +739,7 @@ async function temperature() {
   $('#tGraph').querySelectorAll('[data-t]').forEach(c => c.onclick = () => { tSel = +c.dataset.t; temperature(); });
   if (tSel != null && TR[tSel]) {
     const x = TR[tSel];
-    $('#tDetail').innerHTML = `<b style="color:var(--txt)">${x.date.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })} à ${x.date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</b> · ${fr(x.km, 0)} km · <b style="color:var(--txt)">${Math.round(x.wh)} Wh/km</b> · ${fr(x.temp, 0)} °C · coût ≈ ${eur(x.km * x.wh / 1000 * P.reseau)} (réseau)${x.de || x.a ? '<br>' + (x.de || '?') + ' → ' + (x.a || '?') : ''}${x.km < 12 ? '<br>💡 Les petits trajets consomment plus : le chauffage de l\'habitacle pèse lourd.' : ''}`;
+    $('#tDetail').innerHTML = `<b style="color:var(--txt)">${x.date.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })} à ${x.date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</b> · ${fr(x.km, 0)} km · <b style="color:var(--txt)">${Math.round(x.wh)} Wh/km</b> · ${fr(x.temp, 0)} °C · coût ≈ ${eur(x.km * x.wh / 1000 * P.reseau)} (réseau)${x.de || x.a ? '<br>' + esc(x.de || '?') + ' → ' + esc(x.a || '?') : ''}${x.km < 12 ? '<br>💡 Les petits trajets consomment plus : le chauffage de l\'habitacle pèse lourd.' : ''}`;
   } else $('#tDetail').textContent = 'Touchez un point pour voir le trajet.';
 }
 
@@ -754,7 +761,7 @@ async function pertes() {
   let tot = 0, sen = 0, cli = 0, h = 0;
   const parJour = {};
   list.forEach(x => {
-    const e = Math.max(0, x.energy_used ?? ((x.starting_battery - x.ending_battery) / 100 * P.batt) ?? 0);
+    let e = x.energy_used ?? ((x.starting_battery - x.ending_battery) / 100 * P.batt); e = Number.isFinite(e) ? Math.max(0, e) : 0;
     const fs = Math.min(1, x.sentry_fraction || 0), fc = Math.min(1 - fs, x.climate_fraction || 0);
     // part de l'énergie : on répartit en supposant ~2,5 kW·h/jour de Sentinelle contre ~0,3 en veille
     const ps = fs ? Math.min(e, e * fs * 8 / (fs * 8 + fc * 10 + (1 - fs - fc))) : 0;
