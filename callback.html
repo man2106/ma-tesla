@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Ma Tesla – Connexion Tesla</title>
+<style>
+body{margin:0;background:#0b0c0e;color:#f2f3f5;font-family:system-ui,-apple-system,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;text-align:center}
+.box{max-width:360px}
+.mut{color:#9aa1ab;font-size:15px;line-height:1.5}
+a{display:inline-block;margin-top:20px;padding:14px 22px;border-radius:14px;background:#3e8bff;color:#fff;text-decoration:none;font-weight:600}
+</style>
+</head>
+<body>
+<div class="box">
+  <div style="font-size:44px" id="ic">⏳</div>
+  <h1 id="t" style="font-size:22px">Connexion à Tesla…</h1>
+  <p class="mut" id="m"></p>
+  <a href="./#reglages" id="retour">Revenir à Ma Tesla</a>
+</div>
+<script>
+// Page de retour après la connexion au compte Tesla.
+// Le code reçu est transmis à l'application (sur ce téléphone uniquement) puis on y retourne.
+(function () {
+  var p = new URLSearchParams(location.search);
+  var code = p.get('code'), err = p.get('error'), state = p.get('state');
+  if (code) {
+    try { localStorage.setItem('mt_tesla_code', JSON.stringify({ code: code, state: state, t: Date.now() })); } catch (e) {}
+    document.getElementById('ic').textContent = '✅';
+    document.getElementById('t').textContent = 'Compte Tesla autorisé';
+    document.getElementById('m').textContent = 'Retour à l\'application…';
+    history.replaceState(null, '', location.pathname);
+    setTimeout(function () { location.replace('./#reglages'); }, 1200);
+  } else {
+    document.getElementById('ic').textContent = '⚠️';
+    document.getElementById('t').textContent = 'Connexion non terminée';
+    document.getElementById('m').textContent = err === 'access_denied' ? 'Vous avez refusé l\'accès sur la page Tesla.' : 'Aucun code reçu de Tesla. Réessayez depuis les Réglages de Ma Tesla.';
+  }
+})();
+</script>
+</body>
+</html>
