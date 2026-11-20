@@ -1,0 +1,15 @@
+{
+  "name": "Ma Tesla",
+  "short_name": "Ma Tesla",
+  "description": "Suivi de votre Tesla : charge, économies, soleil et sécurité.",
+  "lang": "fr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0c0e",
+  "theme_color": "#0b0c0e",
+  "icons": [
+    { "src": "icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any" }
+  ]
+}

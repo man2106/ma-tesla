@@ -1,4 +1,5 @@
 // Ma Tesla — version connectée à Tessie (mode démo si aucun code d'accès)
+const APP_VERSION = '15';
 const $ = s => document.querySelector(s);
 const API = 'https://api.tessie.com';
 const store = {
@@ -189,6 +190,23 @@ function batterie() {
   const lib = { Charging: 'En charge' + (S.puissance ? ' · ' + S.puissance + ' kW' : ''), Complete: 'Charge terminée', Stopped: 'Branchée · en pause', Disconnected: 'Non branchée' };
   ce.textContent = lib[S.charge] || (live() ? 'Non branchée' : 'Non branchée');
   ce.classList.toggle('ok', S.charge === 'Charging');
+  eta();
+}
+// Estimation de fin de charge (puissance mesurée par Tessie, capacité de la batterie des réglages)
+function eta() {
+  const kw = S.charge === 'Charging' ? (S.amp && S.volt ? S.amp * S.volt / 1000 : S.puissance) : 0;
+  const ok = kw > 0 && S.lim > S.pct;
+  const txt = ok ? (() => {
+    const kwh = (S.lim - S.pct) / 100 * P.batt, h = kwh / kw, fin = new Date(Date.now() + h * 3600e3);
+    const hh = Math.floor(h), mm = Math.round((h - hh) * 60);
+    const duree = hh ? hh + ' h ' + pad(mm) + ' min' : Math.max(1, mm) + ' min';
+    return `${fr(kwh, 1)} kWh à ajouter · pleine dans ${duree} (vers ${pad(fin.getHours())} h ${pad(fin.getMinutes())})`;
+  })() : '';
+  for (const id of ['#eta', '#etaCharge']) {
+    const el = $(id); if (!el) continue;
+    el.style.display = ok ? '' : 'none';
+    el.textContent = ok ? '⚡ ' + txt : '';
+  }
 }
 function lim() { $('#limVal').textContent = S.lim + ' %'; $('#limTxt').textContent = 'Limite de charge : ' + S.lim + ' %'; $('#repere').style.left = S.lim + '%'; $('#limRange').value = S.lim; }
 $('#limRange').oninput = e => { S.lim = +e.target.value; lim(); };
@@ -1162,4 +1180,26 @@ demarrerSecurite();
 setInterval(() => { if (live() && !document.hidden) charger(); }, 60000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && live()) charger(); });
 
-$('#maj').onclick = () => { location.replace(location.pathname + '?maj=' + Date.now() + (location.hash || '')); };
+// ---------- Mise à jour : on compare la version publiée à celle en cours ----------
+async function versionPubliee() {
+  const r = await fetch('index.html?check=' + Date.now(), { cache: 'no-store' });
+  if (!r.ok) throw new Error('Erreur ' + r.status);
+  const m = (await r.text()).match(/app\.js\?v=([\w.-]+)/);
+  return m ? m[1] : null;
+}
+function majBouton(texte, disabled = false) { const b = $('#maj'); b.textContent = texte; b.disabled = disabled; }
+$('#maj').onclick = async () => {
+  majBouton('Vérification…', true);
+  try {
+    const v = await versionPubliee();
+    if (v && v !== APP_VERSION) {
+      majBouton('Installation de la v' + v + '…', true);
+      if ('caches' in window) for (const k of await caches.keys()) await caches.delete(k);
+      location.replace(location.pathname + '?maj=' + Date.now() + (location.hash || ''));
+      return;
+    }
+    toast('Déjà à jour · v' + APP_VERSION);
+  } catch (e) { toast('Mise à jour impossible : ' + msgErreur(e)); }
+  majBouton('Vérifier les mises à jour');
+};
+$('#verApp').textContent = APP_VERSION;

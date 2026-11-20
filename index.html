@@ -9,6 +9,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Ma Tesla">
 <meta name="theme-color" content="#0b0c0e">
+<meta name="color-scheme" content="dark">
+<link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon.png">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
 <style>
@@ -72,6 +74,45 @@ input[type=range]{width:100%;accent-color:var(--acc)}
 .pill2{font-size:11px;padding:4px 9px;border-radius:99px;background:#1e2126;color:#c7ccd3}
 #solAccueil{display:none!important}
 .action{display:flex;gap:12px;align-items:center;border-radius:16px;padding:12px 14px;border:1px solid var(--line);background:var(--card)}
+
+/* ===== Modernisation v15 : surfaces, navigation flottante, mouvements doux ===== */
+:root{--card:#15171c;--card2:#1d2027;--line:#262a32;--glow:0 1px 0 #ffffff0d inset,0 10px 30px -12px #000c;--radius:20px}
+html{background:var(--bg)}
+body{font-feature-settings:"cv11","ss01";-webkit-font-smoothing:antialiased;letter-spacing:-.005em}
+h1{font-size:24px;font-weight:700;letter-spacing:-.02em}
+h2{font-size:12px;font-weight:600;margin:26px 4px 10px;color:#9aa1ab;letter-spacing:.09em}
+.card{background:linear-gradient(180deg,#1a1d23 0%,#14161a 100%);border:1px solid var(--line);border-radius:var(--radius);padding:16px;box-shadow:var(--glow)}
+.mini{background:linear-gradient(180deg,#1a1d23,#14161a);border-radius:16px;box-shadow:var(--glow)}
+.action{border-radius:var(--radius);box-shadow:var(--glow)}
+.tile{border-radius:var(--radius);background:linear-gradient(180deg,#1a1d23,#14161a);box-shadow:var(--glow);transition:transform .15s ease,border-color .2s,background .2s}
+@media (hover:hover){.tile:hover{border-color:#3a414c}}
+.tile.on{background:linear-gradient(180deg,#17305a,#132544)}
+.btn{border-radius:16px;font-weight:600;letter-spacing:-.005em;transition:transform .15s ease,filter .2s,opacity .2s}
+.btn:active{transform:scale(.98);filter:brightness(.92)}
+.btn:disabled{opacity:.55;cursor:default}
+.btn:not(.sec){background:linear-gradient(180deg,#4b95ff,#2f7ae8);box-shadow:0 8px 20px -10px #3e8bffaa}
+.btn.sec{background:linear-gradient(180deg,#1f232b,#1a1d23)}
+.sw{transition:background .2s}
+.sw::after{box-shadow:0 1px 3px #0006}
+.pill,.pill2,.demo{letter-spacing:.01em}
+.bar{background:#1b1e24}
+.bar i{background:linear-gradient(90deg,#2ecc71,#7ef0b0);box-shadow:0 0 12px #2ecc7166}
+#heroEur{background:linear-gradient(90deg,#3ee38a,#a6f5c9);-webkit-background-clip:text;background-clip:text;color:transparent!important}
+.nav{left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom) + 10px);border:1px solid #262a32;border-radius:24px;background:#121418e8;box-shadow:0 18px 40px -16px #000e;padding:6px}
+.nav a{border-radius:16px;padding:7px 0 6px;font-weight:500;transition:background .25s,color .25s;position:relative}
+.nav a.act{background:#1c2a40;color:#cfe3ff}
+.nav a.act svg{color:#8ebcff}
+.nav a:active{transform:scale(.94)}
+.view.act{animation:entree .35s cubic-bezier(.2,.7,.2,1)}
+@keyframes entree{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.toast{border-radius:14px;box-shadow:0 14px 30px -12px #000d;backdrop-filter:blur(10px)}
+.map{border-radius:var(--radius)}
+input[type=range]{height:28px}
+select,input[type=password]{transition:border-color .2s}
+select:focus,input:focus{outline:none;border-color:var(--acc)!important}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+#eta,#etaCharge{font-size:13px;color:#9cc3ff;background:#132544;border:1px solid #1f3a66;border-radius:12px;padding:8px 10px;line-height:1.45}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
@@ -98,6 +139,7 @@ input[type=range]{width:100%;accent-color:var(--acc)}
       <span class="mut" style="margin-left:auto;margin-bottom:4px;font-size:12px" id="auto100">100 % = —</span></div>
     <div class="bar" style="height:8px;margin-top:8px"><i id="barre" style="width:72%"></i><b id="repere" style="left:80%"></b></div>
     <div class="mut" id="limTxt" style="display:none">Limite de charge : 80 %</div>
+    <div id="eta" style="display:none;margin-top:10px"></div>
     <div id="battInfos" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:10px"></div>
   </div>
 
@@ -131,6 +173,7 @@ input[type=range]{width:100%;accent-color:var(--acc)}
     <div class="loc"><span>Limite de charge</span><b id="limVal">80 %</b></div>
     <input type="range" min="50" max="100" value="80" id="limRange" style="margin-top:12px">
     <div class="loc mut" style="margin-top:4px"><span>Quotidien</span><span>Voyage</span></div>
+    <div id="etaCharge" style="display:none;margin-top:14px"></div>
   </div>
 
   <h2>Limite selon le lieu</h2>
@@ -199,8 +242,8 @@ input[type=range]{width:100%;accent-color:var(--acc)}
   </div>
   <h2>Application</h2>
   <div class="card">
-    <div class="row"><span>Version</span><b>14 · 13 nov.</b></div>
-    <button class="btn sec" id="maj">Mettre à jour l'application</button>
+    <div class="row"><span>Version</span><b id="verApp">—</b></div>
+    <button class="btn sec" id="maj">Vérifier les mises à jour</button>
   </div>
   <h2>À propos</h2>
   <div class="card mut" style="font-size:14px;line-height:1.5">
@@ -274,6 +317,6 @@ input[type=range]{width:100%;accent-color:var(--acc)}
   <a href="#reglages" data-v="reglages"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Réglages</a>
 </nav>
 
-<script src="app.js?v=14"></script>
+<script src="app.js?v=15"></script>
 </body>
 </html>
