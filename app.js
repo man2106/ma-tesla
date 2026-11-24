@@ -1,5 +1,5 @@
 // Ma Tesla — version connectée à Tessie (mode démo si aucun code d'accès)
-const APP_VERSION = '18';
+const APP_VERSION = '19';
 const $ = s => document.querySelector(s);
 const API = 'https://api.tessie.com';
 const store = {
@@ -109,7 +109,7 @@ async function chargerMeteo() {
     const cond = w.condition || w.description || '';
     $('#wxI').textContent = /rain|pluie|drizzle/i.test(cond) ? '🌧️' : /snow|neige/i.test(cond) ? '❄️' : /clear|sun|soleil/i.test(cond) ? '☀️' : '⛅';
     const lo = w.min_temperature ?? w.temp_min, hi = w.max_temperature ?? w.temp_max;
-    $('#wxD').innerHTML = (traduire(cond) || 'Météo actuelle') + (lo != null && hi != null ? `<br>Min ${Math.round(lo)}° · Max ${Math.round(hi)}°` : '') + (w.location ? `<br>${esc(w.location)}` : '');
+    $('#wxD').innerHTML = (esc(traduire(cond)) || 'Météo actuelle') + (lo != null && hi != null ? `<br>Min ${Math.round(lo)}° · Max ${Math.round(hi)}°` : '') + (w.location ? `<br>${esc(w.location)}` : '');
   } catch (e) {}
 }
 function traduire(c) {
@@ -248,7 +248,7 @@ const L = store.get('lieux', live() ? [] : [['🏠', 'Domicile', 80, null, null]
 let lieuxOn = store.get('lieuxOn', true);
 function lieux() {
   $('#swLieu').classList.toggle('on', lieuxOn);
-  $('#lieux').innerHTML = L.length ? L.map((l, i) => `<div class="row"><span>${l[0]} <span contenteditable="true" data-n="${i}" style="outline:none;border-bottom:1px dashed var(--line)">${esc(l[1])}</span></span><span style="display:flex;gap:8px;align-items:center"><select data-l="${i}">${[50, 60, 70, 80, 90, 100].map(v => `<option ${v === l[2] ? 'selected' : ''}>${v}</option>`).join('')}</select><span data-x="${i}" style="color:var(--mut);cursor:pointer;padding:4px">✕</span></span></div>`).join('')
+  $('#lieux').innerHTML = L.length ? L.map((l, i) => `<div class="row"><span>${esc(l[0])} <span contenteditable="true" data-n="${i}" style="outline:none;border-bottom:1px dashed var(--line)">${esc(l[1])}</span></span><span style="display:flex;gap:8px;align-items:center"><select data-l="${i}">${[50, 60, 70, 80, 90, 100].map(v => `<option ${v === l[2] ? 'selected' : ''}>${v}</option>`).join('')}</select><span data-x="${i}" style="color:var(--mut);cursor:pointer;padding:4px">✕</span></span></div>`).join('')
     : '<div class="mut" style="padding:10px 0">Garez la voiture à un endroit (maison, travail…), puis touchez le bouton ci-dessous.</div>';
 }
 function sauverLieux() { store.set('lieux', L); }
@@ -539,7 +539,7 @@ async function chargesDuJour(jour) {
       const info = !r.dom ? 'hors domicile' : `☀️ ${Math.round(r.sol / Math.max(kwh, 0.01) * 100)} % solaire (${r.mesure ? 'mesuré' : 'estimé'})`;
       return `<div class="row"><div><div>${hh(deb)}${fin ? ' → ' + hh(fin) : ''}</div><div class="mut">${info}</div></div><b>${fr(kwh, 1)} kWh</b></div>`;
     }).join('') : '<div class="mut" style="font-size:13px">Pas de recharge de la Tesla ce jour-là.</div>';
-  } catch (e) { box.innerHTML = '<div class="mut" style="font-size:13px">Recharges indisponibles : ' + msgErreur(e) + '</div>'; }
+  } catch (e) { box.innerHTML = '<div class="mut" style="font-size:13px">Recharges indisponibles : ' + esc(msgErreur(e)) + '</div>'; }
 }
 $('#hwFile').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
@@ -712,7 +712,7 @@ const PL = [
   ['kwc', 'Puissance des panneaux (kWc)', 0.1], ['incl', 'Inclinaison du toit (°)', 1],
   ['maison', 'Conso. de la maison en journée (kW)', 0.1], ['prise', 'Puissance de charge sur la prise (kW)', 0.1], ['batt', 'Capacité utile de la batterie (kWh)', 0.5], ['superc', 'Prix Superchargeur si inconnu (€/kWh)', 0.01]];
 function paramsUI() {
-  $('#gParams').innerHTML = PL.map(([k, l, st]) => `<div class="row"><span style="font-size:14px">${l}</span><input data-p="${k}" type="${st === 'date' ? 'date' : 'number'}" ${st !== 'date' ? 'step="' + st + '" inputmode="decimal"' : ''} value="${P[k]}" style="width:${st === 'date' ? 140 : 90}px;text-align:right;background:var(--card2);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:8px;font:15px Inter,sans-serif"></div>`).join('');
+  $('#gParams').innerHTML = PL.map(([k, l, st]) => `<div class="row"><span style="font-size:14px">${l}</span><input data-p="${k}" type="${st === 'date' ? 'date' : 'number'}" ${st !== 'date' ? 'step="' + st + '" inputmode="decimal"' : ''} value="${esc(P[k])}" style="width:${st === 'date' ? 140 : 90}px;text-align:right;background:var(--card2);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:8px;font:15px Inter,sans-serif"></div>`).join('');
   $('#gParams').onchange = e => { const k = e.target.dataset.p; if (!k) return; P[k] = e.target.type === 'date' ? e.target.value : +String(e.target.value).replace(',', '.'); store.set('prix', P); gains(); if (typeof hwAfficher === 'function') hwAfficher(); if (['kwc', 'incl'].includes(k)) store.set('meteo', null); prevision(); };
 }
 const eur = n => fr(n, n >= 1000 ? 0 : 2).replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' €';
@@ -843,7 +843,7 @@ async function prevision() {
       const d = await r.json(); c = { t: Date.now(), la, h: d.hourly }; store.set('meteo', c);
     }
     SOL = calculerSoleil(c.h); solAfficher(); solMiniAfficher();
-  } catch (e) { $('#solResume').innerHTML = '<div class="mut">Prévision indisponible : ' + msgErreur(e) + '</div>'; }
+  } catch (e) { $('#solResume').innerHTML = '<div class="mut">Prévision indisponible : ' + esc(msgErreur(e)) + '</div>'; }
 }
 function calculerSoleil(h) {
   const jours = {};
@@ -1138,6 +1138,7 @@ function solMoisAfficher() {
 }
 
 $('#periode').onchange = () => { gains(); pertes(); };
+$('#solMini').onclick = () => { location.hash = '#gains'; };
 histAfficher();
 hwPret.then(() => { hwAfficher(); solMoisAfficher(); });
 
@@ -1333,7 +1334,7 @@ function majSecuUI() {
     <button class="btn" id="secLock">🔒 Verrouiller maintenant</button>
     <button class="btn sec" id="secFid">${L0.cred ? 'Désactiver Face ID' : 'Activer Face ID'}</button>
     <button class="btn sec" id="secPin">Changer le code</button>
-    <div class="mut" style="font-size:12px;margin-top:10px;line-height:1.5">Votre code Tessie est chiffré sur ce téléphone et ne peut être lu qu'avec votre code ou Face ID. Après 10 codes faux, la connexion est effacée.</div>`;
+    <div class="mut" style="font-size:12px;margin-top:10px;line-height:1.5">Vos codes d'accès (Tessie, Home Assistant) sont chiffrés sur ce téléphone. Le code à 6 chiffres arrête quelqu'un qui prend le téléphone en main : après 10 codes faux, la connexion est effacée. Il ne résisterait pas à une personne capable de copier les données du téléphone pour essayer tous les codes ailleurs : gardez le téléphone lui-même verrouillé.</div>`;
   $('#secDelai').onchange = e => store.set('delaiVerrou', +e.target.value);
   $('#secLock').onclick = () => verrouiller();
   $('#secFid').onclick = async () => {
