@@ -1,5 +1,5 @@
 // Ma Tesla — version connectée à Tessie (mode démo si aucun code d'accès)
-const APP_VERSION = '16';
+const APP_VERSION = '17';
 const $ = s => document.querySelector(s);
 const API = 'https://api.tessie.com';
 const store = {
@@ -70,6 +70,7 @@ async function charger() {
     S.portes = !!(v.df || v.dr || v.pf || v.pr);
     if (c.battery_range != null && c.battery_level > 0) S.km100 = c.battery_range * 1.609344 / c.battery_level * 100;
     S.amp = c.charger_actual_current; S.volt = c.charger_voltage;
+    S.tFin = c.time_to_full_charge > 0 ? c.time_to_full_charge : null; // heures, estimées par la voiture
     S.maj = new Date();
     toutAfficher();
     automatismes();
@@ -95,25 +96,25 @@ function traduire(c) {
   return m[c] || c;
 }
 async function chargerHistorique() {
-  if (!live()) return;
+  if (!live() && !aHist()) { histoDemo(); return; }
   try {
-    const now = Math.floor(Date.now() / 1000);
-    const d = await api(`/${VIN}/charges?from=${now - 60 * 86400}&to=${now}&distance_format=km&format=json&superchargers_only=false`);
-    const list = (d.results || d || []).slice(0, 15);
-    if (!Array.isArray(list) || !list.length) { $('#hist').innerHTML = '<div class="mut">Aucune recharge sur les 60 derniers jours.</div>'; return; }
+    const now = Math.floor(Date.now() / 1000), from = now - 60 * 86400;
+    const d = live() ? await api(`/${VIN}/charges?from=${from}&to=${now}&distance_format=km&format=json&superchargers_only=false`) : [];
+    // toutes les recharges de la période, les plus récentes d'abord
+    const list = fusion(Array.isArray(d) ? d : d.results, HIST.charges, from, now + 1).sort((x, y) => (y.started_at || 0) - (x.started_at || 0));
     const debutMois = new Date(); debutMois.setDate(1); debutMois.setHours(0, 0, 0, 0);
     let e = 0, cost = 0;
-    $('#hist').innerHTML = list.map(h => {
-      const t = new Date((h.started_at || h.start_date || 0) * 1000);
-      const kwh = h.energy_added ?? h.energy_used ?? 0;
-      const dom = estDomicile(h), hh = t.getHours();
-      const prix = h.cost > 0 ? h.cost : dom ? kwh * (hh >= 9 && hh < 16 ? P.solaire : P.reseau) : kwh * P.superc;
-      if (t >= debutMois) { e += kwh; cost += prix; }
-      const lieu = (dom ? '🏠 ' : '⚡ ') + (h.saved_location || h.location || (h.is_supercharger ? 'Superchargeur' : 'Recharge'));
-      return `<div class="row"><div><div>${esc(lieu)}</div><div class="mut">${t.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })} · ${fr(kwh, 0)} kWh</div></div><b>${fr(prix, 2)} €</b></div>`;
-    }).join('');
+    const lignes = list.map(h => {
+      const t = new Date((h.started_at || 0) * 1000), r = repartir(h);
+      const prix = h.cost > 0 ? h.cost : r.dom ? r.sol * P.solaire + r.res * P.reseau : (h.energy_added ?? r.kwh) * P.superc;
+      if (t >= debutMois) { e += r.kwh; cost += prix; }
+      const lieu = (r.dom ? '🏠 ' : '⚡ ') + (h.saved_location || h.location || (h.is_supercharger ? 'Superchargeur' : r.dom ? 'Domicile' : 'Recharge'));
+      return `<div class="row"><div><div>${esc(lieu)}</div><div class="mut">${t.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })} · ${fr(r.kwh, 0)} kWh</div></div><b>${fr(prix, 2)} €</b></div>`;
+    });
+    // le total du mois compte toutes les recharges, la liste n'affiche que les 15 dernières
     $('#mE').textContent = fr(e, 0) + ' kWh'; $('#mC').textContent = fr(cost, 2) + ' €';
-  } catch (er) { $('#hist').innerHTML = '<div class="mut">Historique indisponible : ' + msgErreur(er) + '</div>'; }
+    $('#hist').innerHTML = lignes.length ? lignes.slice(0, 15).join('') : '<div class="mut">Aucune recharge sur les 60 derniers jours.</div>';
+  } catch (er) { $('#hist').innerHTML = '<div class="mut">Historique indisponible : ' + esc(msgErreur(er)) + '</div>'; }
 }
 function msgErreur(e) {
   return (e && e.message === 'Failed to fetch') ? 'connexion bloquée ou pas d\'internet' : (e && e.message) || 'erreur inconnue';
@@ -203,11 +204,12 @@ function batterie() {
 // Estimation de fin de charge (puissance mesurée par Tessie, capacité de la batterie des réglages)
 function eta() {
   const kw = S.charge === 'Charging' ? (S.amp && S.volt ? S.amp * S.volt / 1000 : S.puissance) : 0;
-  const ok = kw > 0 && S.lim > S.pct;
+  const ok = S.charge === 'Charging' && S.lim > S.pct && (kw > 0 || S.tFin);
   const txt = ok ? (() => {
-    const kwh = (S.lim - S.pct) / 100 * P.batt, h = kwh / kw, fin = new Date(Date.now() + h * 3600e3);
-    const hh = Math.floor(h), mm = Math.round((h - hh) * 60);
-    const duree = hh ? hh + ' h ' + pad(mm) + ' min' : Math.max(1, mm) + ' min';
+    // la voiture connaît le ralentissement de fin de charge : son estimation passe avant le calcul
+    const kwh = (S.lim - S.pct) / 100 * P.batt, h = S.tFin || kwh / kw, fin = new Date(Date.now() + h * 3600e3);
+    const min = Math.max(1, Math.round(h * 60)), hh = Math.floor(min / 60), mm = min % 60;
+    const duree = hh ? hh + ' h ' + pad(mm) + ' min' : mm + ' min';
     return `${fr(kwh, 1)} kWh à ajouter · pleine dans ${duree} (vers ${pad(fin.getHours())} h ${pad(fin.getMinutes())})`;
   })() : '';
   for (const id of ['#eta', '#etaCharge']) {
@@ -248,6 +250,8 @@ let dejaFait = {};
 async function automatismes() {
   const ici = lieuActuel();
   const garee = !S.gear || S.gear === 'P';
+  // la voiture a quitté tout lieu connu : la limite du lieu sera réappliquée au retour
+  if (S.lat != null && !ici) dejaFait.lim = null;
   if (lieuxOn && ici && ici[2] !== S.lim && dejaFait.lim !== ici[1] + ici[2]) {
     dejaFait.lim = ici[1] + ici[2];
     try { await cmd('set_charge_limit', 'percent=' + ici[2]); S.lim = ici[2]; lim(); toast(ici[1] + ' : limite passée à ' + ici[2] + ' %'); } catch (e) {}
@@ -312,7 +316,7 @@ function choisir(vin) {
 $('#dx').onclick = async () => {
   // si Home Assistant est connecté, son jeton doit rester chiffré : on redemande le code
   if (HA_TOKEN) { if (!(await securiserToken(''))) return; } else oublierToken();
-  TOKEN = ''; VIN = ''; TR = null; store.set('token', ''); store.set('vin', ''); connexionUI(); toast('Déconnectée');
+  TOKEN = ''; VIN = ''; TR = null; store.set('token', ''); store.set('vin', ''); connexionUI(); chargerHistorique(); toast('Déconnectée');
 };
 
 
@@ -482,10 +486,9 @@ async function chargesDuJour(jour) {
     if ($('#hwCharges') !== box) return;
     box.innerHTML = list.length ? '<div class="mut" style="margin-bottom:4px">Recharges de la Tesla ce jour-là</div>' + list.map(c => {
       const deb = new Date(c.started_at * 1000), fin = c.ended_at ? new Date(c.ended_at * 1000) : null;
-      const kwh = c.energy_used ?? c.energy_added ?? 0, dom = estDomicile(c);
-      const res = dom ? partReseau(deb.getTime(), fin && fin.getTime(), kwh) : null;
+      const r = repartir(c), kwh = r.kwh;
       const hh = d => d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
-      const info = !dom ? 'hors domicile' : res != null ? `☀️ ${Math.round((kwh - res) / Math.max(kwh, 0.01) * 100)} % solaire (mesuré)` : (deb.getHours() >= 9 && deb.getHours() < 16 ? '☀️ journée (estimé)' : '🌙 soir/nuit (estimé)');
+      const info = !r.dom ? 'hors domicile' : `☀️ ${Math.round(r.sol / Math.max(kwh, 0.01) * 100)} % solaire (${r.mesure ? 'mesuré' : 'estimé'})`;
       return `<div class="row"><div><div>${hh(deb)}${fin ? ' → ' + hh(fin) : ''}</div><div class="mut">${info}</div></div><b>${fr(kwh, 1)} kWh</b></div>`;
     }).join('') : '<div class="mut" style="font-size:13px">Pas de recharge de la Tesla ce jour-là.</div>';
   } catch (e) { box.innerHTML = '<div class="mut" style="font-size:13px">Recharges indisponibles : ' + msgErreur(e) + '</div>'; }
@@ -520,7 +523,7 @@ function histAfficher() {
   box.innerHTML = `<b style="color:var(--txt)">${esc((HIST.sources || []).join(', ') || 'Historique')}</b> · du ${f(Math.min(...all))} au ${f(Math.max(...all))}<br>${HIST.drives.length} trajets · ${HIST.charges.length} recharges · ${HIST.idles.length} périodes à l'arrêt<br><span style="font-size:12px">Fusionné avec Tessie : quand les deux ont la même recharge ou le même trajet, celui de Tessie est gardé.</span>`;
   $('#histSuppr').style.display = '';
 }
-function rafraichirTout() { accueilMaj(); TR = null; for (const k in cacheCh) delete cacheCh[k]; histAfficher(); gains(); temperature(); pertes(); }
+function rafraichirTout() { accueilMaj(); chargerHistorique(); TR = null; for (const k in cacheCh) delete cacheCh[k]; histAfficher(); gains(); temperature(); pertes(); }
 $('#histFile').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
   try {
@@ -684,16 +687,35 @@ function estDomicile(c) {
   const kwh = c.energy_used ?? c.energy_added ?? 0;
   return h > 0 && kwh / h <= 3.7;
 }
+// Sans compteur : heures où les panneaux peuvent alimenter la prise (plus courtes en hiver)
+function fenetreSoleil(d) { const m = d.getMonth(); return m >= 10 || m === 0 ? [11, 14] : m === 1 || m === 9 ? [10, 15] : [9, 16]; }
+// Part de la recharge (de deb à fin, en ms) faite dans ces heures, à puissance constante
+function partSoleilEstimee(deb, fin) {
+  const d = new Date(deb);
+  if (!fin || fin <= deb) { const [a, b] = fenetreSoleil(d), h = d.getHours(); return h >= a && h < b ? 1 : 0; }
+  let sol = 0;
+  for (const j = new Date(d.getFullYear(), d.getMonth(), d.getDate()); j.getTime() < fin; j.setDate(j.getDate() + 1)) {
+    const [a, b] = fenetreSoleil(j), wa = new Date(j).setHours(a, 0, 0, 0), wb = new Date(j).setHours(b, 0, 0, 0);
+    sol += Math.max(0, Math.min(fin, wb) - Math.max(deb, wa));
+  }
+  return Math.min(1, sol / (fin - deb));
+}
+// Répartition d'une recharge : {kwh, dom, sol, res, mesure} (mesure = calculée avec le compteur)
+function repartir(c) {
+  const kwh = c.energy_used ?? c.energy_added ?? 0, dom = estDomicile(c);
+  if (!dom) return { kwh, dom, sol: 0, res: 0, mesure: false };
+  const deb = (c.started_at || 0) * 1000, fin = (c.ended_at || 0) * 1000;
+  const r = partReseau(deb, fin, kwh);
+  if (r != null) return { kwh, dom, sol: kwh - r, res: r, mesure: true };
+  const f = partSoleilEstimee(deb, fin);
+  return { kwh, dom, sol: kwh * f, res: kwh * (1 - f), mesure: false };
+}
 function analyser(charges, drives) {
   let solKwh = 0, resKwh = 0, autreKwh = 0, autreEur = 0, km = 0, mesure = 0;
   charges.forEach(c => {
-    const kwh = c.energy_used ?? c.energy_added ?? 0;
-    if (estDomicile(c)) {
-      const deb = (c.started_at || 0) * 1000, fin = (c.ended_at || 0) * 1000;
-      const res = partReseau(deb, fin, kwh);
-      if (res != null) { resKwh += res; solKwh += kwh - res; mesure++; }
-      else { const h = new Date(deb).getHours(); if (h >= 9 && h < 16) solKwh += kwh; else resKwh += kwh; }
-    } else { autreKwh += kwh; autreEur += c.cost > 0 ? c.cost : (c.energy_added ?? kwh) * P.superc; }
+    const r = repartir(c);
+    if (r.dom) { solKwh += r.sol; resKwh += r.res; if (r.mesure) mesure++; }
+    else { autreKwh += r.kwh; autreEur += c.cost > 0 ? c.cost : (c.energy_added ?? r.kwh) * P.superc; }
   });
   drives.forEach(d => { km += d.odometer_distance ?? d.distance ?? 0; });
   const tous = charges.concat(drives); const t0 = tous.length ? Math.min(...tous.map(x => x.started_at)) : null, t1 = tous.length ? Math.max(...tous.map(x => x.ended_at || x.started_at)) : null;
@@ -732,8 +754,8 @@ async function gains() {
   $('#g100').textContent = r.km ? fr(r.elec / r.km * 100, 2) + ' €' : '—';
   $('#gSol').textContent = r.kwhTot ? Math.round(r.solKwh / r.kwhTot * 100) + ' %' + (r.mesure ? ' ✓' : '') : '—';
   const lig = (t, k, e, col) => `<div class="row"><div><div>${t}</div><div class="mut">${fr(k, 0)} kWh</div></div><b style="color:${col}">${eur(e)}</b></div>`;
-  $('#gRep').innerHTML = lig('☀️ Soleil (domicile, journée)', r.solKwh, r.solKwh * P.solaire, 'var(--ok)')
-    + lig('🌙 Réseau (domicile, soir/nuit)', r.resKwh, r.resKwh * P.reseau, 'var(--warn)')
+  $('#gRep').innerHTML = lig('☀️ Soleil (domicile)', r.solKwh, r.solKwh * P.solaire, 'var(--ok)')
+    + lig('🌙 Réseau (domicile)', r.resKwh, r.resKwh * P.reseau, 'var(--warn)')
     + lig('⚡ Superchargeurs et bornes', r.autreKwh, r.autreEur, 'var(--txt)');
   // rentabilité
   const [a, b] = bornes(); const jours = !r.t0 ? Math.max(1, (b - a) / 86400) : Math.max(1, (Math.min(b, r.t1) - Math.max(a, r.t0)) / 86400);
@@ -1282,6 +1304,7 @@ function majSecuUI() {
 // ---------- Démo : historique fictif ----------
 function histoDemo() {
   const H = [['Domicile', '11 nov.', '38', '6,84'], ['Superchargeur Lyon', '8 nov.', '52', '21,32'], ['Domicile', '5 nov.', '41', '7,38'], ['Travail', '3 nov.', '30', '0,00'], ['Superchargeur Mâcon', '1 nov.', '25', '12,36']];
+  $('#mE').textContent = '186 kWh'; $('#mC').textContent = '47,90 €';
   $('#hist').innerHTML = H.map(h => `<div class="row"><div><div>${h[0]}</div><div class="mut">${h[1]} · ${h[2]} kWh</div></div><b>${h[3]} €</b></div>`).join('');
 }
 
@@ -1299,7 +1322,7 @@ function toutAfficher() { tuiles(); etat(); clim(); lim(); batterie(); carte(); 
 function toutCharger() { charger(); chargerMeteo(); chargerHistorique(); }
 
 toutAfficher(); lieux(); connexionUI(); paramsUI(); go(); if (location.hash === '#gains') { gains(); temperature(); pertes(); }
-histoDemo();
+chargerHistorique();
 accueilMaj();
 demarrerSecurite();
 setInterval(() => { if (live() && !document.hidden) charger(); }, 60000);
