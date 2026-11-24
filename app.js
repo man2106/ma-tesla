@@ -1,5 +1,5 @@
 // Ma Tesla — version connectée à Tessie (mode démo si aucun code d'accès)
-const APP_VERSION = '17';
+const APP_VERSION = '18';
 const $ = s => document.querySelector(s);
 const API = 'https://api.tessie.com';
 const store = {
@@ -29,10 +29,29 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 
 // ---------- Appels Tessie ----------
 async function api(path, method = 'GET') {
-  const r = await fetch(API + path, { method, headers: { Authorization: 'Bearer ' + TOKEN } });
+  // délai maximum : une lecture ou une commande ne reste jamais bloquée indéfiniment
+  const ctl = new AbortController(), garde = setTimeout(() => ctl.abort(), method === 'GET' ? 20000 : 75000);
+  let r;
+  try { r = await fetch(API + path, { method, headers: { Authorization: 'Bearer ' + TOKEN }, signal: ctl.signal }); }
+  catch (e) { throw ctl.signal.aborted ? new Error(method === 'GET' ? 'Tessie ne répond pas' : 'la voiture ne répond pas') : e; }
+  finally { clearTimeout(garde); }
   if (r.status === 401 || r.status === 403) throw new Error('Code d\'accès refusé');
   if (!r.ok) throw new Error('Erreur ' + r.status);
   return r.json();
+}
+// Recharges, trajets et arrêts : une demande à Tessie par période, réutilisée 5 minutes par tous les écrans
+const LISTES = [];
+function liste(type, a, b) {
+  const now = Date.now();
+  for (let i = LISTES.length - 1; i >= 0; i--) if (now - LISTES[i].t > 300000) LISTES.splice(i, 1);
+  let c = LISTES.find(x => x.vin === VIN && x.type === type && x.a <= a && x.b >= b - 300);
+  if (!c) {
+    const extra = type === 'charges' ? '&distance_format=km&superchargers_only=false' : type === 'drives' ? '&distance_format=km&temperature_format=c' : '';
+    c = { vin: VIN, type, a, b, t: now, p: api(`/${VIN}/${type}?from=${a}&to=${b}&format=json${extra}`).then(d => Array.isArray(d) ? d : (d && d.results) || []) };
+    c.p.catch(() => { const i = LISTES.indexOf(c); if (i >= 0) LISTES.splice(i, 1); });
+    LISTES.push(c);
+  }
+  return c.p.then(l => ({ results: l.filter(x => x.started_at == null || (x.started_at >= a && x.started_at <= b)) }));
 }
 async function cmd(name, params = '') {
   if (!live()) return true;
@@ -71,12 +90,14 @@ async function charger() {
     if (c.battery_range != null && c.battery_level > 0) S.km100 = c.battery_range * 1.609344 / c.battery_level * 100;
     S.amp = c.charger_actual_current; S.volt = c.charger_voltage;
     S.tFin = c.time_to_full_charge > 0 ? c.time_to_full_charge : null; // heures, estimées par la voiture
-    S.maj = new Date();
+    S.maj = new Date(); S.erreur = null;
     toutAfficher();
     automatismes();
     $('#cxEtat').textContent = 'Connectée à ' + S.nom + ' · mise à jour ' + new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
   } catch (e) {
     $('#cxEtat').textContent = 'Impossible de lire la voiture : ' + msgErreur(e);
+    if (!S.erreur) toast('Voiture injoignable : ' + msgErreur(e));
+    S.erreur = msgErreur(e); etat();
   }
 }
 async function chargerMeteo() {
@@ -99,9 +120,9 @@ async function chargerHistorique() {
   if (!live() && !aHist()) { histoDemo(); return; }
   try {
     const now = Math.floor(Date.now() / 1000), from = now - 60 * 86400;
-    const d = live() ? await api(`/${VIN}/charges?from=${from}&to=${now}&distance_format=km&format=json&superchargers_only=false`) : [];
+    const d = live() ? await liste('charges', from, now) : { results: [] };
     // toutes les recharges de la période, les plus récentes d'abord
-    const list = fusion(Array.isArray(d) ? d : d.results, HIST.charges, from, now + 1).sort((x, y) => (y.started_at || 0) - (x.started_at || 0));
+    const list = fusion(d.results, HIST.charges, from, now + 1).sort((x, y) => (y.started_at || 0) - (x.started_at || 0));
     const debutMois = new Date(); debutMois.setDate(1); debutMois.setHours(0, 0, 0, 0);
     let e = 0, cost = 0;
     const lignes = list.map(h => {
@@ -165,7 +186,8 @@ function etat() {
     + p(S.charge === 'Charging' ? 'En charge' : S.charge && S.charge !== 'Disconnected' ? 'Branchée' : 'Débranchée', S.charge === 'Charging' ? vert : '')
     + p(S.portes ? 'Porte ouverte' : 'Portes fermées', S.portes ? rouge : '')
     + (S.aerer ? p('Fenêtres ouvertes', rouge) : '') + (S.clim ? p('Clim en marche', bleu) : '');
-  $('#majTxt').textContent = (S.maj ? 'màj ' + S.maj.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : 'exemple') + (S.version ? ' · ' + S.version : '');
+  $('#majTxt').style.color = S.erreur ? 'var(--warn)' : '';
+  $('#majTxt').textContent = S.erreur ? '⚠ ' + (S.maj ? 'données de ' + S.maj.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : 'voiture injoignable') : (S.maj ? 'màj ' + S.maj.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : 'exemple') + (S.version ? ' · ' + S.version : '');
   $('#nom').textContent = S.nom;
 }
 
@@ -316,7 +338,7 @@ function choisir(vin) {
 $('#dx').onclick = async () => {
   // si Home Assistant est connecté, son jeton doit rester chiffré : on redemande le code
   if (HA_TOKEN) { if (!(await securiserToken(''))) return; } else oublierToken();
-  TOKEN = ''; VIN = ''; TR = null; store.set('token', ''); store.set('vin', ''); connexionUI(); chargerHistorique(); toast('Déconnectée');
+  TOKEN = ''; VIN = ''; TR = null; LISTES.length = 0; store.set('token', ''); store.set('vin', ''); connexionUI(); chargerHistorique(); toast('Déconnectée');
 };
 
 
@@ -324,6 +346,26 @@ $('#dx').onclick = async () => {
 // ---------- Compteur HomeWizard (import CSV) ----------
 // Stockage compact : [minutes depuis 1970, import cumulé kWh, export cumulé kWh]
 let HW = store.get('hw', []);
+// Gros volumes : IndexedDB, sans la limite d'environ 5 Mo de localStorage (qui reste la solution de secours)
+const grand = {
+  db: null,
+  ouvrir() { return this.db || (this.db = new Promise((ok, ko) => { const r = indexedDB.open('ma-tesla', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => ok(r.result); r.onerror = () => ko(r.error); })); },
+  async get(k) { const db = await this.ouvrir(); return new Promise((ok, ko) => { const r = db.transaction('kv').objectStore('kv').get(k); r.onsuccess = () => ok(r.result); r.onerror = () => ko(r.error); }); },
+  async set(k, v) { const db = await this.ouvrir(); return new Promise((ok, ko) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = () => ok(true); t.onerror = t.onabort = () => ko(t.error); }); }
+};
+// Enregistre les relevés. Retourne false si rien n'a pu être écrit.
+async function sauverHW() {
+  try { await grand.set('hw', HW); try { localStorage.removeItem('mt_hw'); } catch (e) {} return true; }
+  catch (e) { return store.set('hw', HW); }
+}
+// Au démarrage : relit les relevés, ou y déplace ceux de l'ancienne version
+const hwPret = (async () => {
+  try {
+    const v = await grand.get('hw');
+    if (Array.isArray(v)) { if (!HW.length) HW = v; else await sauverHW(); }
+    else if (HW.length) await sauverHW();
+  } catch (e) {}
+})();
 function lireCSV(txt) {
   const lignes = txt.replace(/^﻿/, '').split(/\r?\n/).filter(l => l.trim());
   if (lignes.length < 3) throw new Error('fichier vide ou trop court');
@@ -347,16 +389,19 @@ function lireCSV(txt) {
 function fusionner(nouv) {
   const m = new Map(HW.map(r => [r[0], r])); nouv.forEach(r => m.set(r[0], r));
   HW = [...m.values()].sort((a, b) => a[0] - b[0]);
-  if (!store.set('hw', HW)) toast('Mémoire du téléphone pleine : données non enregistrées');
+  sauverHW().then(ok => { if (!ok) toast('Mémoire du téléphone pleine : données non enregistrées'); });
 }
 // Intervalles : {a, b (ms), imp, exp}
+let ivSrc = null, ivCache = null;
 function intervalles() {
+  if (ivSrc === HW && ivCache) return ivCache;
   const r = [];
   for (let i = 0; i < HW.length - 1; i++) {
     const di = HW[i + 1][1] - HW[i][1], de = HW[i + 1][2] - HW[i][2];
     if (di < 0 || de < 0) continue;
     r.push({ a: HW[i][0] * 60000, b: HW[i + 1][0] * 60000, imp: di, exp: de });
   }
+  ivSrc = HW; ivCache = r;
   return r;
 }
 function resolutionMin() {
@@ -368,8 +413,11 @@ function resolutionMin() {
 function partReseau(debut, fin, kwh) {
   if (!fin || fin <= debut || HW.length < 2) return null;
   const iv = intervalles(); let imp = 0, couvert = 0;
-  for (const x of iv) {
-    const o = Math.min(fin, x.b) - Math.max(debut, x.a); if (o <= 0) continue;
+  // les intervalles sont triés : on saute directement au premier qui touche la recharge
+  let lo = 0, hi = iv.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (iv[m].b <= debut) lo = m + 1; else hi = m; }
+  for (let i = lo; i < iv.length && iv[i].a < fin; i++) {
+    const x = iv[i], o = Math.min(fin, x.b) - Math.max(debut, x.a); if (o <= 0) continue;
     if (x.b - x.a > 61 * 60000) return null;
     const f = o / (x.b - x.a); imp += x.imp * f; couvert += o;
   }
@@ -479,7 +527,7 @@ async function chargesDuJour(jour) {
   try {
     if (!cacheCh[jour]) {
       const a = Math.floor(new Date(jour + 'T00:00') / 1000), b = a + 86400;
-      const d = await api(`/${VIN}/charges?from=${a}&to=${b}&distance_format=km&format=json&superchargers_only=false`);
+      const d = await liste('charges', a, b);
       cacheCh[jour] = fusion(d.results, HIST.charges, a, b);
     }
     const list = cacheCh[jour];
@@ -501,7 +549,7 @@ $('#hwFile').onchange = async e => {
 };
 $('#hwSuppr').onclick = e => {
   if (e.currentTarget.dataset.ok !== '1') { e.currentTarget.dataset.ok = '1'; e.currentTarget.textContent = 'Touchez encore pour confirmer'; setTimeout(() => { $('#hwSuppr').dataset.ok = ''; $('#hwSuppr').textContent = 'Effacer les données du compteur'; }, 3000); return; }
-  HW = []; store.set('hw', []); hwAfficher(); gains(); toast('Données du compteur effacées');
+  HW = []; sauverHW(); hwAfficher(); gains(); toast('Données du compteur effacées');
 };
 
 
@@ -531,7 +579,7 @@ $('#histFile').onchange = async e => {
     if (!o || !Array.isArray(o.drives) || !Array.isArray(o.charges)) throw new Error('fichier non reconnu');
     const mix = (a, b) => { const m = new Map(a.map(x => [x.started_at, x])); (b || []).forEach(x => m.set(x.started_at, x)); return [...m.values()].sort((x, y) => x.started_at - y.started_at); };
     HIST = { drives: mix(HIST.drives, o.drives), charges: mix(HIST.charges, o.charges), idles: mix(HIST.idles, o.idles), sources: [...new Set([...(HIST.sources || []), o.source || 'Import'])] };
-    store.set('hist', HIST); rafraichirTout(); toast('Historique importé : ' + o.drives.length + ' trajets, ' + o.charges.length + ' recharges');
+    const ecrit = store.set('hist', HIST); rafraichirTout(); toast(ecrit ? 'Historique importé : ' + o.drives.length + ' trajets, ' + o.charges.length + ' recharges' : 'Mémoire du téléphone pleine : historique non enregistré');
   } catch (er) { toast('Import impossible : ' + er.message); }
   e.target.value = '';
 };
@@ -617,7 +665,7 @@ async function haSync(silencieux) {
     if (lignes.length < 2) throw new Error('pas encore de statistiques pour ce compteur');
     // on garde les relevés plus anciens (CSV), Home Assistant remplace tout le reste
     HW = HW.filter(r => r[0] < lignes[0][0]).concat(lignes);
-    const ok = store.set('hw', HW); store.set('haSync', Date.now());
+    const ok = await sauverHW(); store.set('haSync', Date.now());
     hwAfficher(); gains(); solMoisAfficher(); accueilMaj();
     if (!ok) toast('Mémoire du téléphone pleine : compteur non enregistré');
     else if (!silencieux) toast('Compteur à jour : ' + lignes.length + ' heures lues');
@@ -734,14 +782,15 @@ function demoDonnees() {
 let gEnCours = false;
 async function gains() {
   if (gEnCours) return; gEnCours = true;
+  await hwPret;
   let r;
   try {
     const [a, b] = bornes();
     if (live()) {
       $('#gTotal').textContent = '…';
       const [c, d] = await Promise.all([
-        api(`/${VIN}/charges?from=${a}&to=${b}&distance_format=km&format=json&superchargers_only=false`),
-        api(`/${VIN}/drives?from=${a}&to=${b}&distance_format=km&format=json`)]);
+        liste('charges', a, b),
+        liste('drives', a, b)]);
       r = analyser(fusion(c.results, HIST.charges, a, b), fusion(d.results, HIST.drives, a, b));
     } else if (aHist()) r = analyser(dansPeriode(HIST.charges, a, b), dansPeriode(HIST.drives, a, b));
     else r = demoDonnees();
@@ -881,7 +930,7 @@ function trajetsDemo() {
 async function chargerTrajets() {
   const to = Math.floor(Date.now() / 1000), from = to - 365 * 86400;
   if (!live() && !aHist()) { TR = trajetsDemo(); return; }
-  const d = live() ? await api(`/${VIN}/drives?from=${from}&to=${to}&distance_format=km&temperature_format=c&format=json`) : { results: [] };
+  const d = live() ? await liste('drives', from, to) : { results: [] };
   d.results = fusion(d.results, HIST.drives, from, to);
   let temps = null;
   try { temps = await tempsHoraires(); } catch (e) {}
@@ -945,7 +994,7 @@ function idlesDemo(a, b) {
 async function pertes() {
   const [a, b] = bornes();
   let list;
-  try { list = live() ? fusion((await api(`/${VIN}/idles?from=${a}&to=${b}&format=json`)).results, HIST.idles, a, b) : aHist() ? dansPeriode(HIST.idles, a, b) : idlesDemo(a, b); }
+  try { list = live() ? fusion((await liste('idles', a, b)).results, HIST.idles, a, b) : aHist() ? dansPeriode(HIST.idles, a, b) : idlesDemo(a, b); }
   catch (e) { $('#pResume').textContent = 'Données indisponibles : ' + msgErreur(e); return; }
   let tot = 0, sen = 0, cli = 0, h = 0;
   const parJour = {};
@@ -998,9 +1047,9 @@ async function pertes() {
 async function collecter(a, b) {
   if (live()) {
     const [c, d, i] = await Promise.all([
-      api(`/${VIN}/charges?from=${a}&to=${b}&distance_format=km&format=json&superchargers_only=false`),
-      api(`/${VIN}/drives?from=${a}&to=${b}&distance_format=km&format=json`),
-      api(`/${VIN}/idles?from=${a}&to=${b}&format=json`).catch(() => ({ results: [] }))]);
+      liste('charges', a, b),
+      liste('drives', a, b),
+      liste('idles', a, b).catch(() => ({ results: [] }))]);
     return { charges: fusion(c.results, HIST.charges, a, b), drives: fusion(d.results, HIST.drives, a, b), idles: fusion(i.results, HIST.idles, a, b) };
   }
   if (aHist()) return { charges: dansPeriode(HIST.charges, a, b), drives: dansPeriode(HIST.drives, a, b), idles: dansPeriode(HIST.idles, a, b) };
@@ -1025,7 +1074,9 @@ async function accueilMaj() {
   if (accEnCours) return; accEnCours = true;
   try {
     const to = Math.floor(Date.now() / 1000), from = P.achat ? Math.floor(new Date(P.achat) / 1000) : to - 365 * 86400;
-    const D = await collecter(from, to);
+    const pD = collecter(from, to); pD.catch(() => {});
+    await hwPret; // les relevés du compteur doivent être relus avant le calcul de la part solaire
+    const D = await pD;
     STATS = D ? calculerStats(D) : { gain: 210, jours: 49, km: 3531, solKwh: 24, resKwh: 76, kwhTot: 100, elec: 258, ess: 470, whkm: 208, perteJ: 1.1, senPart: .85, senJ: 4, senKwhJ: .9, demo: true };
   } catch (e) { STATS = null; $('#heroSous').textContent = 'Données indisponibles : ' + msgErreur(e); }
   accEnCours = false;
@@ -1088,7 +1139,7 @@ function solMoisAfficher() {
 
 $('#periode').onchange = () => { gains(); pertes(); };
 histAfficher();
-hwAfficher();
+hwPret.then(() => { hwAfficher(); solMoisAfficher(); });
 
 // ======================================================================
 // Sécurité : code PIN + Face ID, code Tessie chiffré sur le téléphone
