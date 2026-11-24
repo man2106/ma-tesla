@@ -218,7 +218,7 @@ select:focus,input:focus{outline:none;border-color:var(--acc)!important}
 <!-- RÉGLAGES -->
 <section class="view" id="v-reglages">
   <h1>Réglages</h1>
-  <h2>Sécurité</h2>
+  <h2>Sentinelle</h2>
   <div class="card">
     <div class="row"><div><div style="font-weight:600">Sentinelle automatique</div><div class="mut">S'active toute seule quand la voiture est garée (coûte environ 1 kWh par jour)</div></div><div class="sw" id="swSentAuto"></div></div>
     <div class="row"><div><div style="font-weight:600">Sauf à la maison</div><div class="mut">Ne pas l'activer au domicile</div></div><div class="sw on" id="swSentMaison"></div></div>
@@ -232,6 +232,15 @@ select:focus,input:focus{outline:none;border-color:var(--acc)!important}
     <select id="vins" style="display:none;width:100%;margin-top:10px;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--card2);color:var(--txt)"></select>
     <button class="btn" id="cx">Se connecter</button>
     <button class="btn sec" id="dx" style="display:none">Se déconnecter</button>
+  </div>
+  <h2>Compteur (Home Assistant)</h2>
+  <div class="card">
+    <div class="mut" style="margin-bottom:8px;font-size:14px;line-height:1.5" id="haEtat">Non connecté</div>
+    <input id="haUrl" type="url" placeholder="https://adresse-de-home-assistant" autocomplete="off" autocapitalize="off" style="width:100%;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--card2);color:var(--txt);font:15px Inter,sans-serif">
+    <input id="haTok" type="password" placeholder="Jeton d'accès longue durée" autocomplete="off" style="width:100%;margin-top:10px;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--card2);color:var(--txt);font:15px Inter,sans-serif">
+    <button class="btn" id="haCx">Connecter Home Assistant</button>
+    <button class="btn sec" id="haSync" style="display:none">Lire le compteur maintenant</button>
+    <button class="btn sec" id="haDx" style="display:none">Déconnecter Home Assistant</button>
   </div>
   <h2>Historique importé</h2>
   <div class="card">
@@ -317,6 +326,6 @@ select:focus,input:focus{outline:none;border-color:var(--acc)!important}
   <a href="#reglages" data-v="reglages"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Réglages</a>
 </nav>
 
-<script src="app.js?v=15"></script>
+<script src="app.js?v=16"></script>
 </body>
 </html>

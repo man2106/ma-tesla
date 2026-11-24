@@ -1,16 +1,24 @@
 // Ma Tesla — version connectée à Tessie (mode démo si aucun code d'accès)
-const APP_VERSION = '15';
+const APP_VERSION = '16';
 const $ = s => document.querySelector(s);
 const API = 'https://api.tessie.com';
 const store = {
   get(k, d) { try { const v = localStorage.getItem('mt_' + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set(k, v) { try { localStorage.setItem('mt_' + k, JSON.stringify(v)); } catch (e) {} }
+  set(k, v) { try { localStorage.setItem('mt_' + k, JSON.stringify(v)); return true; } catch (e) { return false; } }
 };
 
 let TOKEN = store.get('lock', null) ? '' : store.get('token', '');
 let VIN = store.get('vin', '');
 const live = () => !!(TOKEN && VIN);
 let STATS = null;
+// Jeton Home Assistant : chiffré avec le code Tessie (même code à 6 chiffres / Face ID)
+let HA_TOKEN = '';
+const emballer = t => HA_TOKEN ? JSON.stringify({ t: t || '', h: HA_TOKEN }) : (t || '');
+function deballer(s) {
+  HA_TOKEN = '';
+  if (s && s[0] === '{') { try { const o = JSON.parse(s); HA_TOKEN = o.h || ''; return o.t || ''; } catch (e) {} }
+  return s || '';
+}
 
 const S = { verrou: true, sentinelle: false, coffre: false, frunk: false, trappe: false, aerer: false,
   clim: false, temp: 21, lim: 80, pct: 72, autoKm: 364, inside: 14, lat: null, lon: null, gear: null, nom: 'Ma Tesla' };
@@ -301,7 +309,11 @@ function choisir(vin) {
   if (!store.get('lieux', null)) L.length = 0;
   sauverLieux(); lieux(); connexionUI(); toast('Voiture connectée'); toutCharger(); accueilMaj();
 }
-$('#dx').onclick = () => { TOKEN = ''; VIN = ''; TR = null; store.set('token', ''); store.set('vin', ''); oublierToken(); connexionUI(); toast('Déconnectée'); };
+$('#dx').onclick = async () => {
+  // si Home Assistant est connecté, son jeton doit rester chiffré : on redemande le code
+  if (HA_TOKEN) { if (!(await securiserToken(''))) return; } else oublierToken();
+  TOKEN = ''; VIN = ''; TR = null; store.set('token', ''); store.set('vin', ''); connexionUI(); toast('Déconnectée');
+};
 
 
 
@@ -331,7 +343,7 @@ function lireCSV(txt) {
 function fusionner(nouv) {
   const m = new Map(HW.map(r => [r[0], r])); nouv.forEach(r => m.set(r[0], r));
   HW = [...m.values()].sort((a, b) => a[0] - b[0]);
-  try { store.set('hw', HW); localStorage.getItem('mt_hw'); } catch (e) {}
+  if (!store.set('hw', HW)) toast('Mémoire du téléphone pleine : données non enregistrées');
 }
 // Intervalles : {a, b (ms), imp, exp}
 function intervalles() {
@@ -523,6 +535,119 @@ $('#histFile').onchange = async e => {
 $('#histSuppr').onclick = e => {
   if (e.currentTarget.dataset.ok !== '1') { e.currentTarget.dataset.ok = '1'; e.currentTarget.textContent = 'Touchez encore pour confirmer'; setTimeout(() => { $('#histSuppr').dataset.ok = ''; $('#histSuppr').textContent = 'Effacer l\'historique importé'; }, 3000); return; }
   HIST = { drives: [], charges: [], idles: [], sources: [] }; store.set('hist', HIST); rafraichirTout(); toast('Historique importé effacé');
+};
+
+// ---------- Compteur lu directement dans Home Assistant (statistiques par heure) ----------
+const haUrl = () => store.get('haUrl', '');
+const haOn = () => !!(HA_TOKEN && haUrl());
+// Ouvre une session WebSocket Home Assistant. Retourne { appel(type, params), fermer() }.
+function haSession(url, token) {
+  return new Promise((res, rej) => {
+    let ws;
+    try { ws = new WebSocket(url.replace(/^http/i, 'ws').replace(/\/+$/, '') + '/api/websocket'); }
+    catch (e) { rej(new Error('adresse invalide')); return; }
+    const att = {}; let n = 0, ouvert = false;
+    const garde = setTimeout(() => { ws.close(); rej(new Error('Home Assistant ne répond pas')); }, 15000);
+    ws.onmessage = ev => {
+      let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (m.type === 'auth_required') ws.send(JSON.stringify({ type: 'auth', access_token: token }));
+      else if (m.type === 'auth_invalid') { clearTimeout(garde); ws.close(); rej(new Error('jeton refusé par Home Assistant')); }
+      else if (m.type === 'auth_ok') {
+        clearTimeout(garde); ouvert = true;
+        res({
+          appel: (type, params = {}) => new Promise((ok, ko) => {
+            const id = ++n; att[id] = [ok, ko];
+            setTimeout(() => { if (att[id]) { delete att[id]; ko(new Error('Home Assistant ne répond pas')); } }, 30000);
+            ws.send(JSON.stringify({ id, type, ...params }));
+          }),
+          fermer: () => ws.close()
+        });
+      } else if (m.type === 'result' && att[m.id]) {
+        const [ok, ko] = att[m.id]; delete att[m.id];
+        m.success ? ok(m.result) : ko(new Error((m.error && m.error.message) || 'demande refusée'));
+      }
+    };
+    ws.onerror = () => { clearTimeout(garde); if (!ouvert) rej(new Error('Home Assistant injoignable (bon réseau ? adresse https ?)')); };
+    ws.onclose = () => { for (const k in att) { att[k][1](new Error('connexion coupée')); delete att[k]; } };
+  });
+}
+// Compteurs réseau déclarés dans le tableau de bord Énergie de Home Assistant
+function haCompteurs(prefs) {
+  const imp = [], exp = [];
+  ((prefs && prefs.energy_sources) || []).filter(x => x.type === 'grid').forEach(g => {
+    (g.flow_from || []).forEach(f => f.stat_energy_from && imp.push(f.stat_energy_from));
+    (g.flow_to || []).forEach(f => f.stat_energy_to && exp.push(f.stat_energy_to));
+    if (g.stat_energy_from) imp.push(g.stat_energy_from);
+    if (g.stat_energy_to) exp.push(g.stat_energy_to);
+  });
+  return { imp: [...new Set(imp)], exp: [...new Set(exp)] };
+}
+// Statistiques Home Assistant → lignes [minutes, import cumulé, export cumulé] (cumul remis à 0 au début)
+function haLignes(st, imp, exp) {
+  const temps = new Set(), series = {};
+  [...imp, ...exp].forEach(id => {
+    const m = new Map(); let base = null;
+    ((st && st[id]) || []).forEach(r => {
+      if (r.sum == null) return;
+      const a = +new Date(r.start), b = r.end != null ? +new Date(r.end) : a + 3600000;
+      if (isNaN(b)) return;
+      if (base === null) base = r.sum;
+      m.set(b, r.sum - base); temps.add(b);
+    });
+    series[id] = m;
+  });
+  const dernier = {}, cumul = (ids, t) => ids.reduce((s, id) => { if (series[id].has(t)) dernier[id] = series[id].get(t); return s + (dernier[id] || 0); }, 0);
+  return [...temps].sort((x, y) => x - y).map(t => [Math.round(t / 60000), +cumul(imp, t).toFixed(3), +cumul(exp, t).toFixed(3)]);
+}
+let haEnCours = false;
+async function haSync(silencieux) {
+  if (!haOn() || haEnCours) return; haEnCours = true; haUI('Synchronisation…');
+  let s;
+  try {
+    s = await haSession(haUrl(), HA_TOKEN);
+    const { imp, exp } = haCompteurs(await s.appel('energy/get_prefs'));
+    if (!imp.length) throw new Error('aucun compteur réseau dans le tableau de bord Énergie de Home Assistant');
+    const fin = new Date(), achat = P.achat ? new Date(P.achat) : null;
+    const deb = achat && !isNaN(achat) ? new Date(Math.max(achat, fin - 3 * 365 * 86400000)) : new Date(fin - 400 * 86400000);
+    const st = await s.appel('recorder/statistics_during_period', { start_time: deb.toISOString(), end_time: fin.toISOString(), statistic_ids: [...imp, ...exp], period: 'hour', types: ['sum'], units: { energy: 'kWh' } });
+    const lignes = haLignes(st, imp, exp);
+    if (lignes.length < 2) throw new Error('pas encore de statistiques pour ce compteur');
+    // on garde les relevés plus anciens (CSV), Home Assistant remplace tout le reste
+    HW = HW.filter(r => r[0] < lignes[0][0]).concat(lignes);
+    const ok = store.set('hw', HW); store.set('haSync', Date.now());
+    hwAfficher(); gains(); solMoisAfficher(); accueilMaj();
+    if (!ok) toast('Mémoire du téléphone pleine : compteur non enregistré');
+    else if (!silencieux) toast('Compteur à jour : ' + lignes.length + ' heures lues');
+    haUI();
+  } catch (e) { haUI('Synchronisation impossible : ' + msgErreur(e)); if (!silencieux) toast('Home Assistant : ' + msgErreur(e)); }
+  finally { if (s) s.fermer(); haEnCours = false; }
+}
+function haAuto() { if (haOn() && Date.now() - store.get('haSync', 0) > 3600000) haSync(true); }
+function haUI(msg) {
+  const on = haOn(), t = store.get('haSync', 0);
+  $('#haUrl').style.display = $('#haTok').style.display = $('#haCx').style.display = on ? 'none' : '';
+  $('#haSync').style.display = $('#haDx').style.display = on ? '' : 'none';
+  if (!on && !$('#haUrl').value) $('#haUrl').value = haUrl();
+  $('#haEtat').textContent = msg || (on ? 'Connecté' + (t ? ' · dernière lecture ' + new Date(t).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '')
+    : 'Non connecté. Le compteur HomeWizard est lu dans Home Assistant, heure par heure, sans fichier à importer.');
+}
+$('#haCx').onclick = async () => {
+  const url = $('#haUrl').value.trim().replace(/\/+$/, ''), tok = $('#haTok').value.trim();
+  if (!/^https:\/\/[^/]+/i.test(url)) { toast('L\'adresse doit commencer par https://'); return; }
+  if (!tok) { toast('Collez d\'abord le jeton d\'accès'); return; }
+  if (!deverrouille) return;
+  haUI('Connexion…');
+  try { (await haSession(url, tok)).fermer(); }
+  catch (e) { haUI('Échec de la connexion : ' + msgErreur(e)); return; }
+  HA_TOKEN = tok; store.set('haUrl', url);
+  if (!(await securiserToken(TOKEN))) { HA_TOKEN = ''; store.set('haUrl', ''); haUI('Connexion annulée : un code est obligatoire'); return; }
+  $('#haTok').value = ''; haUI(); toast('Home Assistant connecté'); haSync();
+};
+$('#haSync').onclick = () => haSync();
+$('#haDx').onclick = async () => {
+  HA_TOKEN = ''; store.set('haUrl', ''); store.set('haSync', 0);
+  if (TOKEN) await securiserToken(TOKEN); else oublierToken();
+  haUI(); toast('Home Assistant déconnecté (les relevés déjà lus sont gardés)');
 };
 
 // ---------- Gains et rentabilité ----------
@@ -1008,8 +1133,8 @@ async function enregistrer(token, pin) {
   const sel = alea(16), iter = 310000;
   const L0 = store.get('lock', {}) || {};
   const cle = await clePin(pin, sel, iter);
-  const nouveau = { v: 1, sel: b64(sel), iter, chk: await chiffrer(cle, 'ok'), pin: await chiffrer(cle, token || '') };
-  if (L0.cred && CLE_FID) { nouveau.cred = L0.cred; nouveau.prfSel = L0.prfSel; nouveau.fid = await chiffrer(CLE_FID, token || ''); }
+  const nouveau = { v: 1, sel: b64(sel), iter, chk: await chiffrer(cle, 'ok'), pin: await chiffrer(cle, emballer(token)) };
+  if (L0.cred && CLE_FID) { nouveau.cred = L0.cred; nouveau.prfSel = L0.prfSel; nouveau.fid = await chiffrer(CLE_FID, emballer(token)); }
   store.set('lock', nouveau); store.set('token', ''); store.set('essais', 0);
 }
 let CLE_FID = null;
@@ -1059,7 +1184,7 @@ async function activerFaceId(token) {
     if (!bytes) return false;
     CLE_FID = await clePrf(bytes);
     const L0 = store.get('lock');
-    L0.cred = b64(c.rawId); L0.prfSel = b64(prfSel); L0.fid = await chiffrer(CLE_FID, token);
+    L0.cred = b64(c.rawId); L0.prfSel = b64(prfSel); L0.fid = await chiffrer(CLE_FID, emballer(token));
     store.set('lock', L0); return true;
   } catch (e) { return false; }
 }
@@ -1072,7 +1197,7 @@ async function deverrouillerFaceId() {
   try {
     const bytes = await prfLire(unb64(L0.cred), unb64(L0.prfSel)); if (!bytes) throw 0;
     CLE_FID = await clePrf(bytes);
-    TOKEN = L0.fid ? await dechiffrer(CLE_FID, L0.fid) : '';
+    TOKEN = L0.fid ? deballer(await dechiffrer(CLE_FID, L0.fid)) : deballer('');
     store.set('essais', 0); return true;
   } catch (e) { messagePin('Face ID n\'a pas fonctionné : utilisez votre code.', true); return false; }
 }
@@ -1080,7 +1205,7 @@ async function deverrouillerFaceId() {
 // --- verrouillage ---
 let deverrouille = false;
 async function verrouiller() {
-  deverrouille = false; TOKEN = ''; CLE_FID = null;
+  deverrouille = false; TOKEN = ''; HA_TOKEN = ''; CLE_FID = null;
   const L0 = store.get('lock');
   const fid = L0.cred ? async () => { if (await deverrouillerFaceId()) fin(); } : null;
   let fini = false; const fin = () => { if (fini) return; fini = true; deverrouille = true; fermerEcran(); apresDeverrouillage(); };
@@ -1091,16 +1216,16 @@ async function verrouiller() {
     try {
       const cle = await clePin(pin, unb64(L0.sel), L0.iter);
       await dechiffrer(cle, L0.chk);
-      TOKEN = L0.pin ? await dechiffrer(cle, L0.pin) : '';
+      TOKEN = L0.pin ? deballer(await dechiffrer(cle, L0.pin)) : deballer('');
       store.set('essais', 0); fin();
     } catch (e) {
       const n = essais + 1; store.set('essais', n);
-      if (n >= 10) { store.set('lock', null); store.set('token', ''); store.set('vin', ''); VIN = ''; store.set('essais', 0); fermerEcran(); toast('10 codes faux : connexion effacée par sécurité'); connexionUI(); return; }
+      if (n >= 10) { store.set('lock', null); store.set('token', ''); store.set('vin', ''); VIN = ''; HA_TOKEN = ''; store.set('haUrl', ''); store.set('essais', 0); fermerEcran(); toast('10 codes faux : connexion effacée par sécurité'); connexionUI(); return; }
     }
   }
 }
 function apresDeverrouillage() {
-  connexionUI(); majSecuUI(); accueilMaj();
+  connexionUI(); majSecuUI(); haUI(); accueilMaj(); haAuto();
   if (live()) { toutCharger(); if (location.hash === '#gains') { gains(); pertes(); TR = null; temperature(); } }
 }
 let cache = 0;
@@ -1119,7 +1244,7 @@ async function demarrerSecurite() {
     await enregistrer(t, pin); fermerEcran(); deverrouille = true;
     await proposerFaceId(t); apresDeverrouillage(); return;
   }
-  deverrouille = true; majSecuUI();
+  deverrouille = true; majSecuUI(); haUI();
 }
 
 // --- Réglages → Sécurité ---
@@ -1178,7 +1303,7 @@ histoDemo();
 accueilMaj();
 demarrerSecurite();
 setInterval(() => { if (live() && !document.hidden) charger(); }, 60000);
-document.addEventListener('visibilitychange', () => { if (!document.hidden && live()) charger(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden || !deverrouille) return; if (live()) charger(); haAuto(); });
 
 // ---------- Mise à jour : on compare la version publiée à celle en cours ----------
 async function versionPubliee() {
