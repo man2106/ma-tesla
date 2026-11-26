@@ -1,5 +1,5 @@
 // Ma Tesla — version connectée à Tessie (mode démo si aucun code d'accès)
-const APP_VERSION = '20';
+const APP_VERSION = '21';
 const $ = s => document.querySelector(s);
 const API = 'https://api.tessie.com';
 const store = {
@@ -23,6 +23,8 @@ function deballer(s) {
 const S = { verrou: true, sentinelle: false, coffre: false, frunk: false, trappe: false, aerer: false,
   clim: false, temp: 21, lim: 80, pct: 72, autoKm: 364, inside: 14, lat: null, lon: null, gear: null, nom: 'Ma Tesla' };
 
+// Écran de code affiché : aucune donnée (même d'exemple) ne doit apparaître en dessous
+const verrouille = () => !!store.get('lock', null) && !deverrouille;
 function toast(t) { const e = $('#toast'); e.textContent = t; e.classList.add('show'); clearTimeout(e._t); e._t = setTimeout(() => e.classList.remove('show'), 2200); }
 const fr = (n, d = 1) => (Number.isFinite(+n) ? Number(n) : 0).toFixed(d).replace('.', ',');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -106,7 +108,7 @@ async function charger() {
     if (c.battery_range != null && c.battery_level > 0) S.km100 = c.battery_range * 1.609344 / c.battery_level * 100;
     S.amp = c.charger_actual_current; S.volt = c.charger_voltage;
     S.tFin = c.time_to_full_charge > 0 ? c.time_to_full_charge : null; // heures, estimées par la voiture
-    S.maj = new Date(); S.erreur = null;
+    S.maj = new Date(); S.erreur = null; S.cache = false;
     pollDelai = 60000; if (pollStop) { pollStop = false; pollPlanifier(); }
     toutAfficher();
     automatismes();
@@ -197,33 +199,62 @@ function tuiles() {
   $('#tuiles').innerHTML = T.map(([k, l], i) => `<div class="tile ${S[k] ? 'on' : ''}" data-i="${i}" role="button" tabindex="0" aria-pressed="${!!S[k]}"><svg viewBox="0 0 24 24">${ico[k]}</svg>${l()}</div>`).join('');
   if (fi != null) { const n = document.querySelector('#tuiles .tile[data-i="' + fi + '"]'); if (n) n.focus(); }
 }
-let attente = null;
-$('#tuiles').onclick = async e => {
-  const t = e.target.closest('.tile'); if (!t || t.classList.contains('busy')) return;
+let attente = null, plusOuvert = false;
+const occupe = new Set(); // commandes en cours d'envoi
+const ICO_CLIM = '<path d="M12 2v20M4.5 7l15 10M19.5 7l-15 10"/>';
+const ICO_PLUS = '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>';
+function cmdHtml(k, ico, lib, on, extra) {
+  return `<button type="button" class="cmd ${on ? 'on' : ''}${extra && extra.confirm ? ' confirm' : ''}${occupe.has(k) ? ' busy' : ''}" data-k="${k}"${extra && extra.i != null ? ' data-i="' + extra.i + '"' : ''}${extra && extra.plus ? ' aria-expanded="' + plusOuvert + '" aria-controls="plusPanel" aria-label="Plus de commandes"' : ' aria-pressed="' + !!on + '"'}${occupe.has(k) ? ' aria-busy="true"' : ''}><svg viewBox="0 0 24 24" aria-hidden="true">${ico}</svg><span>${lib}</span></button>`;
+}
+function tuiles() {
+  const a = document.activeElement, f = a && a.closest ? a.closest('#cmds .cmd, #plusPanel .cmd') : null, fk = f ? f.dataset.k : null;
+  const att = i => !!attente && T[i][2]() === attente;
+  const b = (i, lib) => { const [k, l] = T[i]; return cmdHtml(k, ico[k], att(i) ? 'Confirmer ?' : (lib || l()), !!S[k], { i, confirm: att(i) }); };
+  $('#cmds').innerHTML = b(0, 'Verrouiller') + cmdHtml('clim', ICO_CLIM, 'Clim', S.clim) + b(1)
+    + cmdHtml('plus', ICO_PLUS, 'Plus', plusOuvert, { plus: true });
+  $('#plusPanel').hidden = !plusOuvert;
+  $('#plusPanel').innerHTML = [2, 3, 4, 5].map(i => b(i)).join('');
+  if (fk) { const n = document.querySelector('#cmds .cmd[data-k="' + fk + '"], #plusPanel .cmd[data-k="' + fk + '"]'); if (n && !n.closest('[hidden]')) n.focus(); }
+}
+async function cmdClick(e) {
+  const t = e.target.closest('.cmd'); if (!t) return;
+  const k = t.dataset.k;
+  if (k === 'plus') { plusOuvert = !plusOuvert; tuiles(); return; }
+  if (occupe.has(k)) return;
+  // l'état de la voiture n'est pas encore lu : une bascule enverrait peut-être la mauvaise commande
+  if (live() && (S.cache || !S.maj) && !S.erreur) { toast('Lecture de la voiture en cours, patientez'); return; }
+  if (k === 'clim') { await climBascule(); return; }
   const [, , c, act, msg] = T[t.dataset.i]; const nom = c();
-  if (sensibles[nom] && attente !== nom) { attente = nom; toast(sensibles[nom] + ' Touchez encore pour confirmer'); setTimeout(() => { if (attente === nom) attente = null; }, 3000); return; }
-  attente = null;
-  t.classList.add('busy');
+  if (sensibles[nom] && attente !== nom) {
+    attente = nom; tuiles(); toast(sensibles[nom] + ' Touchez encore pour confirmer');
+    setTimeout(() => { if (attente === nom) { attente = null; tuiles(); } }, 3000); return;
+  }
+  attente = null; occupe.add(k); tuiles();
   try { await cmd(nom); act(); toast(msg()); } catch (er) { toast('Échec : ' + msgErreur(er)); }
-  tuiles(); etat();
-};
+  occupe.delete(k); tuiles(); etat();
+}
+$('#cmds').onclick = cmdClick; $('#plusPanel').onclick = cmdClick;
+$('#plusPanel').onkeydown = e => { if (e.key === 'Escape' && plusOuvert) { plusOuvert = false; tuiles(); const p = document.querySelector('#cmds [data-k="plus"]'); if (p) p.focus(); } };
 function etat() {
-  const st = [S.gear && S.gear !== 'P' ? 'En route' : 'Garée', S.verrou ? 'Verrouillée' : 'Déverrouillée'];
-  if (S.sentinelle) st.push('Sentinelle');
-  if (S.charge === 'Charging') st.push('En charge');
-  $('#etat').textContent = st.join(' · ');
-  const p = (t, c) => `<span class="pill2" style="${c || ''}">${t}</span>`;
-  const bleu = 'background:#16212f;color:#9cc3ff', rouge = 'background:#2a1618;color:#ff9b9b', vert = 'background:#11331f;color:#5be38f';
-  const ici = typeof lieuActuel === 'function' ? lieuActuel() : null;
-  $('#pills').innerHTML = p((S.gear && S.gear !== 'P' ? 'En route' : 'Garée') + (ici ? ' · ' + esc(ici[1]) : ''), bleu)
-    + p(S.verrou ? 'Verrouillée' : 'Déverrouillée', S.verrou ? bleu : rouge)
-    + (S.sentinelle ? p('Sentinelle', rouge) : '')
-    + p(S.charge === 'Charging' ? 'En charge' : S.charge && S.charge !== 'Disconnected' ? 'Branchée' : 'Débranchée', S.charge === 'Charging' ? vert : '')
-    + p(S.portes ? 'Porte ouverte' : 'Portes fermées', S.portes ? rouge : '')
-    + (S.aerer ? p('Fenêtres ouvertes', rouge) : '') + (S.clim ? p('Clim en marche', bleu) : '');
+  const verr = verrouille(), el = $('#etat');
+  $('#nom').textContent = verr ? 'Ma Tesla' : S.nom;
+  const col = (t, c) => `<span style="color:${c}">${t}</span>`;
+  if (verr) el.textContent = '—';
+  else if (live() && (!S.maj || S.cache)) el.innerHTML = S.erreur ? col('Voiture injoignable : valeurs en mémoire', 'var(--warn)') : 'Lecture de la voiture…';
+  else {
+    const ici = lieuActuel();
+    const p = [(S.gear && S.gear !== 'P' ? 'En route' : 'Garée') + (ici ? ' · ' + esc(ici[1]) : '')];
+    if (S.charge === 'Charging') p.push(col('En charge' + (S.etaCourt ? ', ' + S.etaCourt : ''), '#5be38f'));
+    else if (S.charge && S.charge !== 'Disconnected') p.push('Branchée');
+    p.push(S.verrou ? 'Verrouillée' : col('Déverrouillée', '#ff9b9b'));
+    if (S.sentinelle) p.push(col('Sentinelle', '#ff9b9b'));
+    if (S.portes) p.push(col('Porte ouverte', '#ff9b9b'));
+    if (S.aerer) p.push(col('Fenêtres ouvertes', '#ff9b9b'));
+    el.innerHTML = p.join(' · ');
+  }
+  const quand = d => (cleJour(d) === cleJour(new Date()) ? '' : d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }) + ' ') + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
   $('#majTxt').style.color = S.erreur ? 'var(--warn)' : '';
-  $('#majTxt').textContent = S.erreur ? '⚠ ' + (S.maj ? 'données de ' + S.maj.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : 'voiture injoignable') : (S.maj ? 'màj ' + S.maj.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : 'exemple') + (S.version ? ' · ' + S.version : '');
-  $('#nom').textContent = S.nom;
+  $('#majTxt').textContent = verr ? '' : S.erreur ? '⚠ ' + (S.maj ? 'données de ' + quand(S.maj) : 'injoignable') : S.maj ? 'màj ' + quand(S.maj) : live() ? '…' : 'exemple';
 }
 
 // ---------- Climatisation ----------
@@ -231,15 +262,17 @@ function clim() {
   $('#swClim').classList.toggle('on', S.clim);
   $('#climEtat').textContent = (S.clim ? 'En marche · vers ' + fr(S.temp) + ' °C' : 'Arrêtée') + ' · Intérieur ' + Math.round(S.inside) + ' °C';
   $('#temp').textContent = fr(S.temp) + ' °C';
+  const bc = document.querySelector('#cmds [data-k="clim"]'); if (bc) { bc.classList.toggle('on', S.clim); bc.setAttribute('aria-pressed', String(S.clim)); }
 }
 let climBusy = false;
-$('#swClim').onclick = async () => {
-  if (climBusy) return; climBusy = true;
+async function climBascule() {
+  if (climBusy) return; climBusy = true; occupe.add('clim'); tuiles();
   const avant = S.clim;
   try { await cmd(avant ? 'stop_climate' : 'start_climate'); S.clim = !avant; clim(); toast(S.clim ? 'Climatisation lancée' : 'Climatisation arrêtée'); }
   catch (er) { S.clim = avant; clim(); toast('Échec : ' + msgErreur(er)); }
-  finally { climBusy = false; }
-};
+  finally { climBusy = false; occupe.delete('clim'); tuiles(); }
+}
+$('#swClim').onclick = climBascule;
 let tTemp, tempAvant = null; // tempAvant : dernière température confirmée par la voiture
 document.querySelectorAll('[data-t]').forEach(b => b.onclick = () => {
   if (tempAvant == null) tempAvant = S.temp;
@@ -253,12 +286,9 @@ document.querySelectorAll('[data-t]').forEach(b => b.onclick = () => {
 
 // ---------- Charge ----------
 function batterie() {
-  $('#pct').textContent = Math.round(S.pct); $('#barre').style.width = S.pct + '%'; $('#auto').textContent = S.autoKm + ' km';
-  $('#auto100').textContent = '100 % = ' + (S.km100 ? Math.round(S.km100) : '—') + ' km';
-  const info = (l, v) => `<div style="font-size:11px;color:var(--mut)">${l}<br><b class="mono" style="font-size:13px;color:var(--txt)">${v}</b></div>`;
-  const kw = S.charge === 'Charging' && S.amp && S.volt ? S.amp * S.volt / 1000 : (typeof P !== 'undefined' ? P.prise : 2.8);
-  $('#battInfos').innerHTML = info('Limite', S.lim + '%') + info(S.charge === 'Charging' ? 'Charge' : 'Prise', fr(kw, 1) + ' kW')
-    + info('Conso', (STATS && STATS.whkm ? Math.round(STATS.whkm) : '—') + ' Wh') + info('Km total', S.odo ? Math.round(S.odo).toLocaleString('fr-FR') : '—');
+  const inconnu = verrouille() || (live() && !S.maj);
+  $('#pct').textContent = inconnu ? '—' : Math.round(S.pct); $('#barre').style.width = (inconnu ? 0 : S.pct) + '%'; $('#auto').textContent = inconnu ? '— km' : S.autoKm + ' km';
+  barreAria(inconnu);
   const ce = $('#chargeEtat');
   const lib = { Charging: 'En charge' + (S.puissance ? ' · ' + S.puissance + ' kW' : ''), Complete: 'Charge terminée', Stopped: 'Branchée · en pause', Disconnected: 'Non branchée' };
   ce.textContent = lib[S.charge] || (live() ? 'Non branchée' : 'Non branchée');
@@ -266,6 +296,10 @@ function batterie() {
   eta();
 }
 // Estimation de fin de charge (puissance mesurée par Tessie, capacité de la batterie des réglages)
+function barreAria(inconnu) {
+  if (inconnu === undefined) inconnu = verrouille() || (live() && !S.maj);
+  $('#bat').setAttribute('aria-label', inconnu ? 'Batterie : lecture en cours' : 'Batterie ' + Math.round(S.pct) + ' %, limite de charge ' + S.lim + ' %');
+}
 function eta() {
   const kw = S.charge === 'Charging' ? (S.amp && S.volt ? S.amp * S.volt / 1000 : S.puissance) : 0;
   const ok = S.charge === 'Charging' && S.lim > S.pct && (kw > 0 || S.tFin);
@@ -274,15 +308,18 @@ function eta() {
     const kwh = (S.lim - S.pct) / 100 * P.batt, h = S.tFin || kwh / kw, fin = new Date(Date.now() + h * 3600e3);
     const min = Math.max(1, Math.round(h * 60)), hh = Math.floor(min / 60), mm = min % 60;
     const duree = hh ? hh + ' h ' + pad(mm) + ' min' : mm + ' min';
+    S.etaCourt = `pleine vers ${pad(fin.getHours())} h ${pad(fin.getMinutes())}`;
     return `${fr(kwh, 1)} kWh à ajouter · pleine dans ${duree} (vers ${pad(fin.getHours())} h ${pad(fin.getMinutes())})`;
   })() : '';
+  if (!ok) S.etaCourt = '';
   for (const id of ['#eta', '#etaCharge']) {
     const el = $(id); if (!el) continue;
     el.style.display = ok ? '' : 'none';
     el.textContent = ok ? '⚡ ' + txt : '';
   }
+  etat();
 }
-function lim() { $('#limVal').textContent = S.lim + ' %'; $('#limTxt').textContent = 'Limite de charge : ' + S.lim + ' %'; $('#repere').style.left = S.lim + '%'; $('#limRange').value = S.lim; }
+function lim() { $('#limVal').textContent = S.lim + ' %'; $('#repere').style.left = S.lim + '%'; $('#limRange').value = S.lim; barreAria(); }
 let limAvant = null; // valeur d'avant le geste du curseur, pour revenir en arrière si la commande échoue
 $('#limRange').oninput = e => { if (limAvant == null) limAvant = S.lim; S.lim = +e.target.value; lim(); };
 $('#limRange').onchange = async () => {
@@ -1162,6 +1199,169 @@ function calculerStats(D) {
   return { ...r, gain: r.ess - r.elec, jours, whkm: r.km ? eDrives * 1000 / r.km : null, perteJ: D.idles.length ? tot / jIdle : null,
     senPart: tot ? sen / tot : 0, senJ: D.idles.length ? senH / jIdle : null, senKwhJ: D.idles.length ? sen / jIdle : 0 };
 }
+// ----- Grille « Jour · Semaine · Mois » : une récupération, découpe locale par jour -----
+const PERIODES = {
+  jour: { n: 1, courbe: 7, cap: 'Depuis minuit · courbes sur 7 jours' },
+  semaine: { n: 7, courbe: 7, cap: '7 derniers jours · une valeur par jour' },
+  mois: { n: 30, courbe: 30, cap: '30 derniers jours · une valeur par jour' }
+};
+const NJ = 30;
+let ACC = null;      // { B : 30 jours de valeurs brutes, demo, cache (instantané pas encore rafraîchi) }
+let ACC_ERR = '';
+let periodeAcc = store.get('periodeAcc', 'jour'); if (!PERIODES[periodeAcc]) periodeAcc = 'jour';
+const jourBrut = k => ({ k, km: 0, eDr: 0, sol: 0, res: 0, autre: 0, autreEur: 0, idle: 0, sen: 0, nDom: 0, nMes: 0 });
+function accueilVide() {
+  const auj = new Date(); auj.setHours(0, 0, 0, 0); const B = [];
+  for (let i = NJ - 1; i >= 0; i--) { const d = new Date(auj); d.setDate(d.getDate() - i); B.push(jourBrut(cleJour(d))); }
+  return B;
+}
+// Range les recharges, trajets et arrêts des 30 derniers jours, jour par jour
+function accueilJours(D) {
+  const B = accueilVide(), idx = {}; B.forEach((b, i) => { idx[b.k] = b; });
+  const t0 = new Date(B[0].k + 'T00:00').getTime() / 1000;
+  const jour = t => idx[cleJour(new Date(t * 1000))];
+  D.charges.forEach(c => {
+    if (!(c.started_at >= t0)) return; const b = jour(c.started_at); if (!b) return;
+    const r = repartir(c);
+    if (r.dom) { b.sol += r.sol; b.res += r.res; b.nDom++; if (r.mesure) b.nMes++; }
+    else { b.autre += r.kwh; b.autreEur += c.cost > 0 ? c.cost : (c.energy_added ?? r.kwh) * P.superc; }
+  });
+  D.drives.forEach(d => {
+    if (!(d.started_at >= t0)) return; const b = jour(d.started_at); if (!b) return;
+    const km = d.odometer_distance ?? d.distance ?? 0;
+    let e = d.energy_used;
+    if (e == null && d.starting_battery != null && d.ending_battery != null) e = (d.starting_battery - d.ending_battery) / 100 * P.batt;
+    if (!Number.isFinite(e) || e < 0) e = km * P.wh / 1000;
+    b.km += km; b.eDr += e;
+  });
+  D.idles.forEach(x => {
+    if (!(x.started_at >= t0)) return; const b = jour(x.started_at); if (!b) return;
+    let e = x.energy_used ?? ((x.starting_battery - x.ending_battery) / 100 * P.batt); e = Number.isFinite(e) ? Math.max(0, e) : 0;
+    const fs = Math.min(1, x.sentry_fraction || 0), fc = Math.min(1 - fs, x.climate_fraction || 0);
+    b.idle += e; b.sen += fs ? Math.min(e, e * fs * 8 / (fs * 8 + fc * 10 + (1 - fs - fc))) : 0;
+  });
+  return B;
+}
+// Valeurs d'exemple (mode démo sans historique) : mêmes calculs que les vraies données
+function accueilDemo() {
+  const B = accueilVide(), r = n => { const x = Math.sin(n * 12.9898 + 4.1) * 43758.5453; return x - Math.floor(x); };
+  B.forEach((b, i) => {
+    const roule = new Date(b.k + 'T12:00').getDay() !== 0 && r(i) > .22;
+    b.km = roule ? Math.round(18 + r(i + 40) * 70) : 0; b.eDr = b.km * (.17 + r(i + 80) * .06);
+    if (i % 3 === 1) { const kwh = 8 + r(i + 5) * 14, f = r(i + 9) > .35 ? .55 + r(i + 7) * .4 : .1; b.sol = kwh * f; b.res = kwh * (1 - f); b.nDom = 1; }
+    else if (i % 9 === 4) { b.autre = 25 + r(i) * 20; b.autreEur = b.autre * P.superc; }
+    b.idle = .3 + r(i + 20) * .9; b.sen = r(i + 60) > .5 ? b.idle * (.4 + r(i + 3) * .4) : 0;
+  });
+  return B;
+}
+// Valeurs de la période choisie + courbe jour par jour (calcul local, instantané)
+function accueilCalc(B, mode) {
+  const p = PERIODES[mode], essKm = P.conso / 100 * P.essence;
+  const t30 = B.reduce((a, b) => { a.kwh += b.sol + b.res + b.autre; a.eur += b.sol * P.solaire + b.res * P.reseau + b.autreEur; return a; }, { kwh: 0, eur: 0 });
+  const pm = t30.kwh > 0 ? t30.eur / t30.kwh : P.reseau; // prix moyen du kWh sur 30 jours
+  const j = b => { const dom = b.sol + b.res; return { gain: b.km * essKm - b.eDr * pm, km: b.km, wh: b.km >= 1 ? b.eDr * 1000 / b.km : null, sol: dom > 0 ? b.sol / dom * 100 : null, ch: dom + b.autre, perte: b.idle }; };
+  const W = B.slice(-p.n), sum = f => W.reduce((s, b) => s + f(b), 0);
+  const km = sum(b => b.km), eDr = sum(b => b.eDr), sol = sum(b => b.sol), res = sum(b => b.res), autre = sum(b => b.autre), nDom = sum(b => b.nDom), nMes = sum(b => b.nMes);
+  return { gain: km * essKm - eDr * pm, km, wh: km >= 1 ? eDr * 1000 / km : null, c100: km >= 1 ? eDr * pm / km * 100 : null,
+    solPct: sol + res > 0 ? sol / (sol + res) * 100 : null, mesure: nDom > 0 && nMes === nDom, nDom, dom: sol + res, autre, ch: sol + res + autre,
+    idle: sum(b => b.idle), sen: sum(b => b.sen), nj: p.n, courbe: B.slice(-p.courbe).map(j) };
+}
+// Mini-courbe SVG : une valeur par jour, aujourd'hui (dernier point) mis en valeur
+function courbe(vals, col) {
+  const n = vals.length, ok = vals.filter(v => v != null && Number.isFinite(v)), X = i => n > 1 ? 4 + i * 92 / (n - 1) : 50;
+  const svg = c => `<svg class="sp" viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true" focusable="false">${c}</svg>`;
+  const pt = (x, y, w, o, c) => `<path d="M${x.toFixed(1)} ${y.toFixed(1)}h.01" stroke="${c || col}" stroke-width="${w}" stroke-linecap="round" opacity="${o}" vector-effect="non-scaling-stroke" fill="none"/>`;
+  if (!ok.length) return svg('<path d="M4 24H96" stroke="#3a414c" stroke-width="1.5" stroke-dasharray="3 4" fill="none" vector-effect="non-scaling-stroke"/>');
+  const mn = Math.min(...ok), sp = Math.max(...ok) - mn, Y = v => sp > 0 ? 24 - (v - mn) / sp * 20 : 14;
+  let d = '', plume = false, pts = '';
+  vals.forEach((v, i) => {
+    if (v == null || !Number.isFinite(v)) { plume = false; return; }
+    d += (plume ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(v).toFixed(1); plume = true;
+    const seul = (i === 0 || vals[i - 1] == null) && (i === n - 1 || vals[i + 1] == null);
+    if (i === n - 1) pts += pt(X(i), Y(v), 11, .25) + pt(X(i), Y(v), 6, 1);
+    else if (seul || periodeAcc === 'jour') pts += pt(X(i), Y(v), 4, .7);
+  });
+  return svg(`<path d="${d}" fill="none" stroke="${col}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>${pts}`);
+}
+let grilleHtml = '';
+function grilleAfficher() {
+  const box = $('#grille'); if (!box) return;
+  const verr = verrouille(), A = ACC && !verr ? accueilCalc(ACC.B, periodeAcc) : null;
+  const sk = (w, h) => `<span class="sk" style="width:${w};height:${h}px"></span>`;
+  const u = (v, un) => v + '<small>' + un + '</small>';
+  const c = (go, lab, tag, val, sub, sp, col) => {
+    const dedans = `<span class="cl"><span>${lab}</span>${tag ? `<span class="ct">${tag}</span>` : ''}</span><span class="cv">${A ? val : sk('55%', 20)}</span><span class="cc">${A ? sub : sk('80%', 13)}</span>${A ? sp : '<span class="sk sp"></span>'}`;
+    return go ? `<button type="button" class="cs" data-go="${go}">${dedans}</button>` : `<div class="cs">${dedans}</div>`;
+  };
+  const cb = A ? A.courbe : [], arr = f => cb.map(x => f(x));
+  const jmoy = A ? Math.round(cb.reduce((s, x) => s + x.km, 0) / Math.max(1, cb.length)) : 0;
+  const cases = [
+    c('#gains', 'Gagné', 'estimé', A && eur(A.gain), A && (A.nj > 1 ? eur(A.gain / A.nj) + ' par jour' : 'vs essence'), A && courbe(arr(x => x.gain), '#2ecc71')),
+    c('#gains', 'Km parcourus', '', A && u(Math.round(A.km).toLocaleString('fr-FR'), ' km'), A && (A.nj > 1 ? Math.round(A.km / A.nj) + ' km par jour' : 'moy. 7 j : ' + jmoy + ' km/j'), A && courbe(arr(x => x.km), '#6fb6ff')),
+    c('#gains', 'Conso', '', A && (A.wh != null ? u(Math.round(A.wh), ' Wh/km') : '—'), A && (A.c100 != null ? eur(A.c100) + ' aux 100 km' : 'pas de trajet'), A && courbe(arr(x => x.wh), '#c3b1ff')),
+    c('#gains', 'Part solaire', A && A.nDom ? (A.mesure ? 'mesuré' : 'estimé') : '', A && (A.solPct != null ? u(Math.round(A.solPct), ' %') : '—'), A && (A.solPct != null ? 'recharges maison' : 'pas de recharge maison'), A && courbe(arr(x => x.sol), '#f5c542')),
+    c('#charge', 'Chargé', '', A && u(A.ch < .05 ? '0' : fr(A.ch, A.ch < 10 ? 1 : 0), ' kWh'), A && 'maison ' + fr(A.dom, 0) + ' · bornes ' + fr(A.autre, 0), A && courbe(arr(x => x.ch), '#3e8bff')),
+    c('#gains', 'Perdu garée', 'estimé', A && u(fr(A.idle, 1), ' kWh'), A && 'dont Sentinelle ' + fr(A.sen, 1), A && courbe(arr(x => x.perte), '#ff9b9b'))
+  ];
+  // Intérieur / extérieur et pneus : valeurs de la voiture, sans courbe
+  const dispo = !verr && (!live() || !!S.maj);
+  const ext = S.ext ?? (live() ? null : 9), pneus = S.pneus && S.pneus.some(x => x != null) ? S.pneus : live() ? [null, null, null, null] : [3.0, 2.9, 2.9, 2.7];
+  const IE = dispo ? [u(Math.round(S.inside) + ' / ' + (ext != null ? Math.round(ext) : '—'), ' °C'), S.clim ? 'clim en marche' : 'clim arrêtée'] : null;
+  const dedansIE = `<span class="cl"><span>Intérieur / extérieur</span></span><span class="cv">${IE ? IE[0] : sk('55%', 20)}</span><span class="cc">${IE ? IE[1] : sk('80%', 13)}</span>`;
+  cases.push(`<button type="button" class="cs" data-go="clim">${dedansIE}</button>`);
+  const nums = pneus.filter(x => x != null), mini = nums.length ? Math.min(...nums) : null, nbas = nums.filter(x => x < 2.75).length;
+  const iMin = mini != null && mini < 2.75 ? pneus.indexOf(mini) : -1;
+  const pn = dispo ? `<span class="pn" role="group" aria-label="Pressions en bar : avant gauche ${pneus[0] != null ? fr(pneus[0], 2) : 'inconnue'}, avant droit ${pneus[1] != null ? fr(pneus[1], 2) : 'inconnue'}, arrière gauche ${pneus[2] != null ? fr(pneus[2], 2) : 'inconnue'}, arrière droit ${pneus[3] != null ? fr(pneus[3], 2) : 'inconnue'}">${pneus.map((x, i) => `<span class="${i === iMin ? 'bas' : ''}">${x != null ? fr(x, 2) : '—'}</span>`).join('')}</span>` : `<span class="cv">${sk('70%', 20)}</span>`;
+  cases.push(`<div class="cs"><span class="cl"><span>Pneus (bar)</span></span>${dispo ? pn : `<span class="pn">${sk('90%', 16)}${sk('90%', 16)}</span>`}<span class="cc" style="margin-top:auto${nbas ? ';color:var(--warn)' : ''}">${dispo ? (nums.length ? (nbas ? nbas + ' sous 2,75 bar' : 'tous corrects') : 'pas de mesure') : sk('70%', 13)}</span></div>`);
+  const html = cases.join('');
+  if (html !== grilleHtml) {
+    const a = document.activeElement, f = a && a.closest ? a.closest('#grille .cs') : null, fi = f ? [...box.children].indexOf(f) : -1;
+    box.innerHTML = html; grilleHtml = html;
+    if (fi >= 0 && box.children[fi]) box.children[fi].focus();
+  }
+  const demo = ACC && ACC.demo, cap = $('#accCap');
+  cap.style.color = ACC_ERR ? 'var(--warn)' : '';
+  cap.textContent = ACC_ERR ? 'Données indisponibles : ' + ACC_ERR : PERIODES[periodeAcc].cap + (demo ? ' · exemple' : '') + (ACC && ACC.cache && live() ? ' · mise à jour…' : '');
+}
+function periodeMaj() {
+  document.querySelectorAll('#periodeAcc [data-per]').forEach(b => { const on = b.dataset.per === periodeAcc; b.setAttribute('aria-checked', String(on)); b.tabIndex = on ? 0 : -1; });
+}
+function periodeChoisir(k) { if (!PERIODES[k]) return; periodeAcc = k; store.set('periodeAcc', k); periodeMaj(); grilleAfficher(); }
+$('#periodeAcc').onclick = e => { const b = e.target.closest('[data-per]'); if (b) periodeChoisir(b.dataset.per); };
+$('#periodeAcc').onkeydown = e => {
+  const ks = Object.keys(PERIODES), i = ks.indexOf(periodeAcc);
+  const j = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? (i + 1) % ks.length : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? (i + ks.length - 1) % ks.length : null;
+  if (j == null) return; e.preventDefault(); periodeChoisir(ks[j]); const n = document.querySelector('#periodeAcc [data-per="' + ks[j] + '"]'); if (n) n.focus();
+};
+$('#grille').onclick = e => {
+  const b = e.target.closest('[data-go]'); if (!b) return;
+  if (b.dataset.go === 'clim') { const n = $('#climCard'); if (n) n.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion:reduce)').matches ? 'auto' : 'smooth', block: 'center' }); }
+  else location.hash = b.dataset.go;
+};
+periodeMaj();
+
+// Instantané des dernières valeurs : la grille s'affiche tout de suite, avant tout calcul
+function accueilCacheSauver() {
+  if (!ACC || ACC.cache || verrouille()) return;
+  const st = STATS ? { jours: STATS.jours, solKwh: STATS.solKwh, resKwh: STATS.resKwh, senPart: STATS.senPart, senKwhJ: STATS.senKwhJ } : null;
+  const frais = live() && S.maj && !S.cache;
+  const prev = store.get('accueil_cache', null);
+  const sv = frais ? { nom: S.nom, pct: S.pct, autoKm: S.autoKm, lim: S.lim, inside: S.inside, ext: S.ext ?? null, pneus: S.pneus || null, maj: +S.maj } : (prev && prev.vin === VIN ? prev.S : null);
+  store.set('accueil_cache', { v: 1, vin: VIN, demo: ACC.demo, t: Date.now(), B: ACC.B, st, S: sv });
+}
+function accueilCacheAppliquer() {
+  if (verrouille()) return false;
+  const c = store.get('accueil_cache', null);
+  if (!c || c.v !== 1 || c.vin !== VIN || !Array.isArray(c.B) || c.demo !== (!live() && !aHist())) return false;
+  const m = new Map(c.B.map(b => [b.k, b]));
+  ACC = { B: accueilVide().map(v => Object.assign(v, m.get(v.k) || {})), demo: !!c.demo, cache: true };
+  if (c.st && !STATS) STATS = Object.assign({ demo: !!c.demo, cache: true }, c.st);
+  if (live() && c.S && !S.maj) {
+    Object.assign(S, { nom: c.S.nom, pct: c.S.pct, autoKm: c.S.autoKm, lim: c.S.lim, inside: c.S.inside, ext: c.S.ext ?? undefined, pneus: c.S.pneus || undefined });
+    S.maj = new Date(c.S.maj); S.cache = true;
+  }
+  return true;
+}
 let accEnCours = false, accAttente = false;
 async function accueilMaj() {
   if (accEnCours) { accAttente = true; return; }
@@ -1172,37 +1372,19 @@ async function accueilMaj() {
     await hwPret; // les relevés du compteur doivent être relus avant le calcul de la part solaire
     const D = await pD;
     STATS = D ? calculerStats(D) : { gain: 210, jours: 49, km: 3531, solKwh: 24, resKwh: 76, kwhTot: 100, elec: 258, ess: 470, whkm: 208, perteJ: 1.1, senPart: .85, senJ: 4, senKwhJ: .9, demo: true };
-  } catch (e) { STATS = null; $('#heroSous').textContent = 'Données indisponibles : ' + msgErreur(e); }
+    ACC = { B: D ? accueilJours(D) : accueilDemo(), demo: !D, cache: false }; ACC_ERR = '';
+    accueilCacheSauver();
+  } catch (e) { ACC_ERR = msgErreur(e); }
   accEnCours = false;
   accueilAfficher(); batterie();
   if (accAttente) { accAttente = false; accueilMaj(); }
 }
 function accueilAfficher() {
-  const s = STATS; if (!s) return;
-  const sem = Math.max(1, Math.round(s.jours / 7));
-  $('#heroEur').textContent = eur(s.gain);
-  const dom = s.solKwh + s.resKwh;
-  $('#heroSous').textContent = `en ${sem} semaine${sem > 1 ? 's' : ''} · ${Math.round(s.km).toLocaleString('fr-FR')} km · ${dom ? Math.round(s.solKwh / dom * 100) : 0} % au soleil${s.demo ? ' (exemple)' : ''}`;
-  const c100 = s.km ? s.elec / s.km * 100 : null, e100 = P.conso * P.essence;
-  const t = (l, v, sub, col) => `<div class="mini"><div class="ml">${l}</div><div class="mv" style="color:${col || 'var(--txt)'}">${v}</div><div class="ms">${sub}</div></div>`;
-  const ici = lieuActuel();
-  $('#miniTuiles').innerHTML =
-    t('Économisé / mois', eur(s.gain / s.jours * 30.4), 'vs essence', 'var(--ok)')
-    + t('Coût / 100 km', c100 != null ? eur(c100) : '—', 'essence ' + eur(e100))
-    + t('Part solaire', (dom ? Math.round(s.solKwh / dom * 100) : 0) + ' %', 'recharges maison', '#f5c542')
-    + t('Perdu garée', s.perteJ != null ? fr(s.perteJ, 1) + ' kWh' : '—', 'par jour', '#ffb36b')
-    + t('Sentinelle', s.senJ != null ? fr(s.senJ, 1) + ' h/j' : '—', Math.round(s.senPart * 100) + ' % des pertes', '#ff9b9b')
-    + t('Km / jour', Math.round(s.km / s.jours), Math.round(s.km).toLocaleString('fr-FR') + ' km')
-    + t('Intérieur', Math.round(S.inside) + ' °C', S.clim ? 'clim en marche' : 'clim arrêtée', '#9cc3ff')
-    + t('Extérieur', S.ext != null ? Math.round(S.ext) + ' °C' : '—', ici ? esc(ici[1]) : 'autour de la voiture', '#9cc3ff')
-    + t('kWh réseau', fr(P.reseau, 2) + ' €', 'soleil ' + fr(P.solaire, 2) + ' €');
-  const pn = (S.pneus || []).map(x => x != null ? fr(x, 2) : '—');
-  $('#pneus').innerHTML = (pn.length ? pn : ['—', '—', '—', '—']).map(x => `<span>${x}</span>`).join('');
-  actionsAfficher(); solMoisAfficher();
+  grilleAfficher(); actionsAfficher(); solMoisAfficher();
 }
 function actionsAfficher() {
   const s = STATS || {}, L2 = [];
-  const a = (ic, col, bg, bd, titre, sous, gain) => `<div class="action" style="background:${bg};border-color:${bd}"><span style="font-size:22px;color:${col}">${ic}</span><span style="flex:1"><b style="font-weight:600">${titre}</b><br><span style="font-size:13px;color:${col}">${sous}</span></span><b style="color:var(--ok);white-space:nowrap">${gain}</b></div>`;
+  const a = (ic, col, bg, bd, titre, sous, gain) => `<div class="action" style="background:${bg};border-color:${bd}"><span style="font-size:22px;color:${col}" aria-hidden="true">${ic}</span><span style="flex:1"><b style="font-weight:600">${titre}</b><br><span style="font-size:13px;color:${col}">${sous}</span></span><b style="color:var(--ok);white-space:nowrap">${gain}</b></div>`;
   if (SOL && SOL.length) {
     const now = new Date().getHours(); const J = SOL[0].best && SOL[0].best.b > now ? [SOL[0], 'aujourd\'hui'] : SOL[1] && SOL[1].best ? [SOL[1], 'demain'] : null;
     if (J) L2.push(a('☀', '#c9bf98', '#17150c', '#4a3f14', `Branchez ${J[1]} de ${J[0].best.a} h à ${J[0].best.b} h`, `${fr(J[0].voiture, 1)} kWh de soleil · ${fr(J[0].voiture * 1000 / P.wh, 0)} km`, '+' + eur(J[0].voiture * (P.reseau - P.solaire))));
@@ -1213,27 +1395,25 @@ function actionsAfficher() {
   const bas = (S.pneus || []).filter(x => x != null && x < 2.75);
   if (bas.length) L2.push(a('◎', '#ffb36b', 'var(--card)', 'var(--line)', 'Regonflez les pneus', bas.length + ' pneu(s) sous 2,75 bar : consommation en hausse', 'sécurité'));
   if ((HIST.sources || []).includes('TeslaFi') && live()) L2.push(a('▭', '#9aa1ab', 'var(--card)', 'var(--line)', 'Un seul abonnement', 'Tessie suffit, TeslaFi fait doublon', '≈ 90 €/an'));
-  $('#actions').innerHTML = L2.length ? L2.join('') : '<div class="mut">Rien à signaler : tout est optimisé 👍</div>';
+  // la première action devient la carte « action du jour » ; la liste garde les suivantes
+  const jour = $('#actionJour');
+  if (jour) jour.innerHTML = '<div class="alab">Action du jour</div>' + (L2.length ? L2[0] : STATS && !verrouille() ? '<div class="action"><span style="flex:1">Rien à signaler : tout est optimisé 👍</span></div>' : '<span class="sk" style="width:100%;height:56px;border-radius:20px"></span>');
+  const reste = L2.slice(1);
+  $('#actions').innerHTML = reste.join('');
+  $('#hActions').style.display = reste.length ? '' : 'none';
 }
-function solMiniAfficher() {
-  if (!SOL || !SOL.length) return;
-  const J = SOL[0], hs = J.hs.filter(x => x.h >= 7 && x.h <= 18), max = Math.max(...hs.map(x => x.prod), .5);
-  $('#solBars').innerHTML = hs.map(x => `<div style="flex:1;border-radius:2px 2px 0 0;height:${Math.max(1, x.prod / max * 30)}px;background:${x.bon ? 'var(--ok)' : '#c9a227'}"></div>`).join('');
-  $('#solTxt').textContent = J.best ? `${J.best.a}–${J.best.b} h · ${fr(J.voiture, 1)} kWh · +${eur(J.voiture * (P.reseau - P.solaire))}` : `${fr(J.prod, 1)} kWh prévus · trop peu pour la prise`;
-  actionsAfficher();
-}
+function solMiniAfficher() { actionsAfficher(); }
 function solMoisAfficher() {
   const box = $('#solMois'); if (HW.length < 2) { box.style.display = 'none'; return; }
   const g = grouper(intervalles(), cleMois), ks = Object.keys(g).sort().slice(-9), max = Math.max(...ks.map(k => g[k].exp), 1);
   const tot = ks.reduce((s, k) => s + g[k].exp, 0);
   box.style.display = '';
   box.innerHTML = `<div style="display:flex;justify-content:space-between;font-size:13px" class="mut"><span>Soleil renvoyé au réseau</span><span>kWh / mois</span></div>
-    <div style="display:flex;align-items:flex-end;gap:6px;height:90px;margin-top:10px">${ks.map(k => `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px"><div style="width:100%;border-radius:4px 4px 0 0;background:#f5a623;height:${Math.max(2, g[k].exp / max * 70)}px"></div><span style="font-size:10px" class="mut">${new Date(k + '-01T12:00').toLocaleDateString('fr-FR', { month: 'short' }).replace('.', '')}</span></div>`).join('')}</div>
+    <div style="display:flex;align-items:flex-end;gap:6px;height:90px;margin-top:10px">${ks.map(k => `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px"><div style="width:100%;border-radius:4px 4px 0 0;background:#f5a623;height:${Math.max(2, g[k].exp / max * 70)}px"></div><span style="font-size:12px" class="mut">${new Date(k + '-01T12:00').toLocaleDateString('fr-FR', { month: 'short' }).replace('.', '')}</span></div>`).join('')}</div>
     <div style="font-size:13px;color:#c7ccd3;margin-top:8px">${fr(tot, 0)} kWh renvoyés, de quoi rouler ≈ ${Math.round(tot * 1000 / P.wh).toLocaleString('fr-FR')} km.</div>`;
 }
 
 $('#periode').onchange = () => { gains(); pertes(); };
-$('#solMini').onclick = () => { location.hash = '#gains'; };
 histAfficher();
 hwPret.then(() => { hwAfficher(); solMoisAfficher(); });
 
@@ -1406,6 +1586,7 @@ async function verrouiller() {
   }
 }
 function apresDeverrouillage() {
+  accueilCacheAppliquer(); toutAfficher();
   connexionUI(); majSecuUI(); haUI(); accueilMaj(); haAuto();
   if (live()) toutCharger(); else chargerHistorique();
   if (location.hash === '#gains') { gains(); pertes(); TR = null; temperature(); }
@@ -1482,10 +1663,10 @@ function go() {
 }
 addEventListener('hashchange', () => { go(); if ((location.hash || '#accueil') === '#accueil') accueilAfficher(); if (location.hash === '#gains') { gains(); temperature(); pertes(); } });
 
-function toutAfficher() { tuiles(); etat(); clim(); lim(); batterie(); carte(); }
+function toutAfficher() { tuiles(); etat(); clim(); lim(); batterie(); carte(); grilleAfficher(); actionsAfficher(); accueilCacheSauver(); }
 function toutCharger() { charger(); chargerMeteo(); chargerHistorique(); }
 
-toutAfficher(); lieux(); connexionUI(); paramsUI(); go(); if (location.hash === '#gains' && !store.get('lock', null)) { gains(); temperature(); pertes(); }
+accueilCacheAppliquer(); toutAfficher(); lieux(); connexionUI(); paramsUI(); go(); if (location.hash === '#gains' && !store.get('lock', null)) { gains(); temperature(); pertes(); }
 // un verrou existe : on attend le déverrouillage avant de calculer ou d'afficher quoi que ce soit (même la démo)
 if (!store.get('lock', null)) { chargerHistorique(); accueilMaj(); }
 demarrerSecurite();
