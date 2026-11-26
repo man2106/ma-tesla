@@ -1,5 +1,5 @@
 // Ma Tesla — version connectée à Tessie (mode démo si aucun code d'accès)
-const APP_VERSION = '19';
+const APP_VERSION = '20';
 const $ = s => document.querySelector(s);
 const API = 'https://api.tessie.com';
 const store = {
@@ -28,15 +28,31 @@ const fr = (n, d = 1) => (Number.isFinite(+n) ? Number(n) : 0).toFixed(d).replac
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
 // ---------- Appels Tessie ----------
-async function api(path, method = 'GET') {
+// Les lectures identiques lancées en même temps (ou à moins de 30 s) partagent la même requête
+const GETS = new Map();
+function api(path, method = 'GET') {
+  if (method !== 'GET') return apiBrut(path, method);
+  const now = Date.now(), cle = TOKEN + ' ' + path;
+  for (const [k, v] of GETS) if (now - v.t > 30000) GETS.delete(k);
+  let c = GETS.get(cle);
+  if (!c) {
+    c = { t: now, p: apiBrut(path, 'GET') };
+    c.p.catch(() => { if (GETS.get(cle) === c) GETS.delete(cle); });
+    GETS.set(cle, c);
+  }
+  return c.p;
+}
+async function apiBrut(path, method) {
   // délai maximum : une lecture ou une commande ne reste jamais bloquée indéfiniment
-  const ctl = new AbortController(), garde = setTimeout(() => ctl.abort(), method === 'GET' ? 20000 : 75000);
+  // (60 s pour les longues listes d'un an, 20 s pour le reste)
+  const delai = method !== 'GET' ? 75000 : /\/(charges|drives|idles)\?/.test(path) ? 60000 : 20000;
+  const ctl = new AbortController(), garde = setTimeout(() => ctl.abort(), delai);
   let r;
   try { r = await fetch(API + path, { method, headers: { Authorization: 'Bearer ' + TOKEN }, signal: ctl.signal }); }
   catch (e) { throw ctl.signal.aborted ? new Error(method === 'GET' ? 'Tessie ne répond pas' : 'la voiture ne répond pas') : e; }
   finally { clearTimeout(garde); }
-  if (r.status === 401 || r.status === 403) throw new Error('Code d\'accès refusé');
-  if (!r.ok) throw new Error('Erreur ' + r.status);
+  if (r.status === 401 || r.status === 403) { const e = new Error('Code d\'accès refusé'); e.status = r.status; throw e; }
+  if (!r.ok) { const e = new Error('Erreur ' + r.status); e.status = r.status; throw e; }
   return r.json();
 }
 // Recharges, trajets et arrêts : une demande à Tessie par période, réutilisée 5 minutes par tous les écrans
@@ -91,14 +107,31 @@ async function charger() {
     S.amp = c.charger_actual_current; S.volt = c.charger_voltage;
     S.tFin = c.time_to_full_charge > 0 ? c.time_to_full_charge : null; // heures, estimées par la voiture
     S.maj = new Date(); S.erreur = null;
+    pollDelai = 60000; if (pollStop) { pollStop = false; pollPlanifier(); }
     toutAfficher();
     automatismes();
     $('#cxEtat').textContent = 'Connectée à ' + S.nom + ' · mise à jour ' + new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
   } catch (e) {
+    if (e && (e.status === 401 || e.status === 403)) {
+      // code d'accès refusé : inutile d'insister, on arrête la lecture automatique
+      pollStop = true; clearTimeout(pollT);
+      const m = 'Code d\'accès refusé : reconnectez-vous dans Réglages';
+      $('#cxEtat').textContent = m;
+      if (S.erreur !== m) toast(m);
+      S.erreur = m; etat(); return;
+    }
+    pollDelai = Math.min(pollDelai * 2, 900000); // 60 s, 2 min, 4 min… 15 min au maximum
     $('#cxEtat').textContent = 'Impossible de lire la voiture : ' + msgErreur(e);
     if (!S.erreur) toast('Voiture injoignable : ' + msgErreur(e));
     S.erreur = msgErreur(e); etat();
   }
+}
+// Lecture automatique de l'état : toutes les 60 s, plus espacée après des erreurs
+let pollDelai = 60000, pollStop = false, pollT = null;
+function pollPlanifier() {
+  clearTimeout(pollT);
+  if (pollStop) return;
+  pollT = setTimeout(async () => { if (live() && !document.hidden && !pollStop) await charger(); pollPlanifier(); }, pollDelai);
 }
 async function chargerMeteo() {
   if (!live()) return;
@@ -160,7 +193,9 @@ const T = [
 ];
 const sensibles = { unlock: 'Déverrouiller la voiture ?', activate_front_trunk: 'Ouvrir le frunk ?', activate_rear_trunk: 'Ouvrir/fermer le coffre ?', vent_windows: 'Entrouvrir les fenêtres ?' };
 function tuiles() {
-  $('#tuiles').innerHTML = T.map(([k, l], i) => `<div class="tile ${S[k] ? 'on' : ''}" data-i="${i}"><svg viewBox="0 0 24 24">${ico[k]}</svg>${l()}</div>`).join('');
+  const a = document.activeElement, focus = a && a.closest ? a.closest('#tuiles .tile') : null, fi = focus ? focus.dataset.i : null;
+  $('#tuiles').innerHTML = T.map(([k, l], i) => `<div class="tile ${S[k] ? 'on' : ''}" data-i="${i}" role="button" tabindex="0" aria-pressed="${!!S[k]}"><svg viewBox="0 0 24 24">${ico[k]}</svg>${l()}</div>`).join('');
+  if (fi != null) { const n = document.querySelector('#tuiles .tile[data-i="' + fi + '"]'); if (n) n.focus(); }
 }
 let attente = null;
 $('#tuiles').onclick = async e => {
@@ -197,15 +232,22 @@ function clim() {
   $('#climEtat').textContent = (S.clim ? 'En marche · vers ' + fr(S.temp) + ' °C' : 'Arrêtée') + ' · Intérieur ' + Math.round(S.inside) + ' °C';
   $('#temp').textContent = fr(S.temp) + ' °C';
 }
+let climBusy = false;
 $('#swClim').onclick = async () => {
-  try { await cmd(S.clim ? 'stop_climate' : 'start_climate'); S.clim = !S.clim; clim(); toast(S.clim ? 'Climatisation lancée' : 'Climatisation arrêtée'); }
-  catch (er) { toast('Échec : ' + msgErreur(er)); }
+  if (climBusy) return; climBusy = true;
+  const avant = S.clim;
+  try { await cmd(avant ? 'stop_climate' : 'start_climate'); S.clim = !avant; clim(); toast(S.clim ? 'Climatisation lancée' : 'Climatisation arrêtée'); }
+  catch (er) { S.clim = avant; clim(); toast('Échec : ' + msgErreur(er)); }
+  finally { climBusy = false; }
 };
-let tTemp;
+let tTemp, tempAvant = null; // tempAvant : dernière température confirmée par la voiture
 document.querySelectorAll('[data-t]').forEach(b => b.onclick = () => {
+  if (tempAvant == null) tempAvant = S.temp;
   S.temp = Math.min(28, Math.max(15, S.temp + b.dataset.t * 0.5)); clim();
   clearTimeout(tTemp); tTemp = setTimeout(async () => {
-    try { await cmd('set_temperatures', 'temperature=' + S.temp); toast('Température réglée à ' + fr(S.temp) + ' °C'); } catch (er) { toast('Échec : ' + msgErreur(er)); }
+    const envoi = S.temp, avant = tempAvant ?? envoi;
+    try { await cmd('set_temperatures', 'temperature=' + envoi); tempAvant = S.temp === envoi ? null : envoi; toast('Température réglée à ' + fr(envoi) + ' °C'); }
+    catch (er) { if (S.temp === envoi) { S.temp = avant; tempAvant = null; clim(); } toast('Échec : ' + msgErreur(er)); }
   }, 900);
 });
 
@@ -241,14 +283,19 @@ function eta() {
   }
 }
 function lim() { $('#limVal').textContent = S.lim + ' %'; $('#limTxt').textContent = 'Limite de charge : ' + S.lim + ' %'; $('#repere').style.left = S.lim + '%'; $('#limRange').value = S.lim; }
-$('#limRange').oninput = e => { S.lim = +e.target.value; lim(); };
-$('#limRange').onchange = async () => { try { await cmd('set_charge_limit', 'percent=' + S.lim); toast('Limite réglée à ' + S.lim + ' %'); } catch (er) { toast('Échec : ' + msgErreur(er)); } };
+let limAvant = null; // valeur d'avant le geste du curseur, pour revenir en arrière si la commande échoue
+$('#limRange').oninput = e => { if (limAvant == null) limAvant = S.lim; S.lim = +e.target.value; lim(); };
+$('#limRange').onchange = async () => {
+  const avant = limAvant ?? S.lim, envoi = S.lim; limAvant = null;
+  try { await cmd('set_charge_limit', 'percent=' + envoi); toast('Limite réglée à ' + envoi + ' %'); }
+  catch (er) { if (S.lim === envoi) { S.lim = avant; lim(); batterie(); } toast('Échec : ' + msgErreur(er)); }
+};
 
 const L = store.get('lieux', live() ? [] : [['🏠', 'Domicile', 80, null, null], ['🏢', 'Travail', 100, null, null]]);
 let lieuxOn = store.get('lieuxOn', true);
 function lieux() {
   $('#swLieu').classList.toggle('on', lieuxOn);
-  $('#lieux').innerHTML = L.length ? L.map((l, i) => `<div class="row"><span>${esc(l[0])} <span contenteditable="true" data-n="${i}" style="outline:none;border-bottom:1px dashed var(--line)">${esc(l[1])}</span></span><span style="display:flex;gap:8px;align-items:center"><select data-l="${i}">${[50, 60, 70, 80, 90, 100].map(v => `<option ${v === l[2] ? 'selected' : ''}>${v}</option>`).join('')}</select><span data-x="${i}" style="color:var(--mut);cursor:pointer;padding:4px">✕</span></span></div>`).join('')
+  $('#lieux').innerHTML = L.length ? L.map((l, i) => `<div class="row"><span>${esc(l[0])} <span contenteditable="true" data-n="${i}" style="outline:none;border-bottom:1px dashed var(--line)">${esc(l[1])}</span></span><span style="display:flex;gap:8px;align-items:center"><select data-l="${i}">${[50, 60, 70, 80, 90, 100].map(v => `<option ${v === l[2] ? 'selected' : ''}>${v}</option>`).join('')}</select><span data-x="${i}" role="button" tabindex="0" aria-label="Supprimer le lieu ${esc(l[1])}" style="color:var(--mut);cursor:pointer;padding:4px">✕</span></span></div>`).join('')
     : '<div class="mut" style="padding:10px 0">Garez la voiture à un endroit (maison, travail…), puis touchez le bouton ci-dessous.</div>';
 }
 function sauverLieux() { store.set('lieux', L); }
@@ -269,23 +316,31 @@ function lieuActuel() {
 
 // ---------- Automatismes (quand l'application est ouverte) ----------
 let dejaFait = {};
+// après un échec, on réessaie au plus tôt 5 minutes plus tard
+const ATTENTE_ECHEC = 5 * 60000;
+const trop_tot = x => x && Date.now() - x < ATTENTE_ECHEC;
 async function automatismes() {
   const ici = lieuActuel();
   const garee = !S.gear || S.gear === 'P';
   // la voiture a quitté tout lieu connu : la limite du lieu sera réappliquée au retour
-  if (S.lat != null && !ici) dejaFait.lim = null;
-  if (lieuxOn && ici && ici[2] !== S.lim && dejaFait.lim !== ici[1] + ici[2]) {
-    dejaFait.lim = ici[1] + ici[2];
-    try { await cmd('set_charge_limit', 'percent=' + ici[2]); S.lim = ici[2]; lim(); toast(ici[1] + ' : limite passée à ' + ici[2] + ' %'); } catch (e) {}
+  if (S.lat != null && !ici) { dejaFait.lim = null; dejaFait.limEchec = null; }
+  if (lieuxOn && ici && ici[2] !== S.lim && dejaFait.lim !== ici[1] + ici[2] && !dejaFait.limBusy && !trop_tot(dejaFait.limEchec)) {
+    const cle = ici[1] + ici[2];
+    dejaFait.limBusy = true;
+    try { await cmd('set_charge_limit', 'percent=' + ici[2]); dejaFait.lim = cle; dejaFait.limEchec = null; S.lim = ici[2]; lim(); toast(ici[1] + ' : limite passée à ' + ici[2] + ' %'); }
+    catch (e) { dejaFait.limEchec = Date.now(); toast('Échec : ' + msgErreur(e) + ' (limite de ' + ici[1] + ', nouvel essai dans 5 min)'); }
+    finally { dejaFait.limBusy = false; }
   }
   const sentAuto = store.get('sentAuto', false), sentMaison = store.get('sentMaison', true);
   const maison = ici && /domicile|maison/i.test(ici[1]);
   const maisonConnue = L.some(l => l[3] != null && /domicile|maison/i.test(l[1]));
-  if (sentAuto && garee && S.lat != null && !S.sentinelle && !(sentMaison && (maison || !maisonConnue)) && dejaFait.sent !== 'on') {
-    dejaFait.sent = 'on';
-    try { await cmd('enable_sentry'); S.sentinelle = true; tuiles(); etat(); toast('Sentinelle activée automatiquement'); } catch (e) {}
+  if (sentAuto && garee && S.lat != null && !S.sentinelle && !(sentMaison && (maison || !maisonConnue)) && dejaFait.sent !== 'on' && !dejaFait.sentBusy && !trop_tot(dejaFait.sentEchec)) {
+    dejaFait.sentBusy = true;
+    try { await cmd('enable_sentry'); dejaFait.sent = 'on'; dejaFait.sentEchec = null; S.sentinelle = true; tuiles(); etat(); toast('Sentinelle activée automatiquement'); }
+    catch (e) { dejaFait.sentEchec = Date.now(); toast('Échec : ' + msgErreur(e) + ' (Sentinelle automatique, nouvel essai dans 5 min)'); }
+    finally { dejaFait.sentBusy = false; }
   }
-  if (!garee) dejaFait.sent = null;
+  if (!garee) { dejaFait.sent = null; dejaFait.sentEchec = null; }
 }
 
 // ---------- Carte ----------
@@ -333,12 +388,12 @@ $('#cx').onclick = async () => {
 function choisir(vin) {
   VIN = vin; store.set('vin', vin); TR = null; $('#vins').style.display = 'none'; $('#tok').value = '';
   if (!store.get('lieux', null)) L.length = 0;
-  sauverLieux(); lieux(); connexionUI(); toast('Voiture connectée'); toutCharger(); accueilMaj();
+  sauverLieux(); lieux(); connexionUI(); toast('Voiture connectée'); pollStop = false; pollDelai = 60000; S.erreur = null; pollPlanifier(); toutCharger(); accueilMaj();
 }
 $('#dx').onclick = async () => {
   // si Home Assistant est connecté, son jeton doit rester chiffré : on redemande le code
   if (HA_TOKEN) { if (!(await securiserToken(''))) return; } else oublierToken();
-  TOKEN = ''; VIN = ''; TR = null; LISTES.length = 0; store.set('token', ''); store.set('vin', ''); connexionUI(); chargerHistorique(); toast('Déconnectée');
+  TOKEN = ''; VIN = ''; TR = null; LISTES.length = 0; GETS.clear(); store.set('token', ''); store.set('vin', ''); connexionUI(); chargerHistorique(); toast('Déconnectée');
 };
 
 
@@ -376,14 +431,21 @@ function lireCSV(txt) {
   const iExp = tete.map((h, i) => /export/i.test(h) && /kwh/i.test(h) ? i : -1).filter(i => i >= 0);
   if (iT < 0 || !iImp.length) throw new Error('ce n\'est pas un export HomeWizard d\'électricité');
   const num = v => { v = (v || '').trim().replace(/"/g, ''); if (sep === ';') v = v.replace(',', '.'); const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+  // dates acceptées : aaaa-mm-jj hh:mm, jj/mm/aaaa hh:mm, jj-mm-aaaa hh:mm (avec ou sans secondes)
+  const date = v => {
+    v = (v || '').trim().replace(/"/g, '');
+    const f = v.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+    if (f) { const [, j, mo, a, h, mi, se] = f; const d = new Date(+a, +mo - 1, +j, +(h || 0), +(mi || 0), +(se || 0)); return d.getMonth() === +mo - 1 ? d : new Date(NaN); }
+    return new Date(v.replace(' ', 'T'));
+  };
   const out = [];
   for (const l of lignes.slice(1)) {
     const c = l.split(sep);
-    const t = new Date((c[iT] || '').trim().replace(/"/g, '').replace(' ', 'T'));
+    const t = date(c[iT]);
     if (isNaN(t)) continue;
     out.push([Math.round(t / 60000), iImp.reduce((a, i) => a + num(c[i]), 0), iExp.reduce((a, i) => a + num(c[i]), 0)]);
   }
-  if (out.length < 2) throw new Error('aucune ligne lisible');
+  if (out.length < 2) throw new Error('aucune ligne lisible : dates non reconnues (attendu aaaa-mm-jj hh:mm ou jj/mm/aaaa hh:mm)');
   return out;
 }
 function fusionner(nouv) {
@@ -660,8 +722,19 @@ async function haSync(silencieux) {
     if (!imp.length) throw new Error('aucun compteur réseau dans le tableau de bord Énergie de Home Assistant');
     const fin = new Date(), achat = P.achat ? new Date(P.achat) : null;
     const deb = achat && !isNaN(achat) ? new Date(Math.max(achat, fin - 3 * 365 * 86400000)) : new Date(fin - 400 * 86400000);
-    const st = await s.appel('recorder/statistics_during_period', { start_time: deb.toISOString(), end_time: fin.toISOString(), statistic_ids: [...imp, ...exp], period: 'hour', types: ['sum'], units: { energy: 'kWh' } });
-    const lignes = haLignes(st, imp, exp);
+    const lire = async d => haLignes(await s.appel('recorder/statistics_during_period', { start_time: d.toISOString(), end_time: fin.toISOString(), statistic_ids: [...imp, ...exp], period: 'hour', types: ['sum'], units: { energy: 'kWh' } }), imp, exp);
+    // Dernière synchro connue : on ne relit que depuis ce moment (moins 2 h de marge), sinon tout
+    const der = store.get('haSync', 0), debIncr = new Date(der - 2 * 3600000);
+    let lignes;
+    if (der && HW.length > 1 && debIncr > deb) {
+      lignes = await lire(debIncr);
+      // le cumul repart de 0 à chaque lecture : on le raccorde aux relevés déjà gardés via les heures en commun
+      const m = new Map(HW.map(r => [r[0], r])), com = lignes.filter(l => m.has(l[0]));
+      const dI = com.length ? m.get(com[0][0])[1] - com[0][1] : 0, dE = com.length ? m.get(com[0][0])[2] - com[0][2] : 0;
+      const bon = com.length && com.every(l => Math.abs(m.get(l[0])[1] - l[1] - dI) < 0.02 && Math.abs(m.get(l[0])[2] - l[2] - dE) < 0.02);
+      if (bon) lignes = lignes.map(l => [l[0], +(l[1] + dI).toFixed(3), +(l[2] + dE).toFixed(3)]);
+      else lignes = await lire(deb); // raccord impossible : relecture complète
+    } else lignes = await lire(deb);
     if (lignes.length < 2) throw new Error('pas encore de statistiques pour ce compteur');
     // on garde les relevés plus anciens (CSV), Home Assistant remplace tout le reste
     HW = HW.filter(r => r[0] < lignes[0][0]).concat(lignes);
@@ -704,6 +777,10 @@ $('#haDx').onclick = async () => {
 // ---------- Gains et rentabilité ----------
 const P_DEF = { essence: 1.905, conso: 7, solaire: 0.20, reseau: 0.43, wh: 175, achat: '', surcout: 0, entretien: 300, kwc: 5, incl: 35, maison: 0.4, prise: 2.8, batt: 57.5, superc: 0.52 };
 const P = Object.assign({}, P_DEF, store.get('prix', {}));
+// Champs qui servent de diviseur (strictement positifs) ou qui ne peuvent pas être négatifs
+const P_POS = ['essence', 'conso', 'reseau', 'wh', 'kwc', 'prise', 'batt', 'superc'], P_POS0 = ['solaire', 'surcout', 'entretien', 'maison', 'incl'];
+for (const k of P_POS) if (!(Number.isFinite(+P[k]) && +P[k] > 0)) P[k] = P_DEF[k];
+for (const k of P_POS0) if (!(Number.isFinite(+P[k]) && +P[k] >= 0)) P[k] = P_DEF[k];
 const PL = [
   ['essence', 'Prix de l\'essence (€/L)', 0.001], ['conso', 'Conso. voiture essence (L/100 km)', 0.1],
   ['solaire', 'kWh solaire (€)', 0.01], ['reseau', 'kWh réseau, tout compris (€)', 0.01],
@@ -713,7 +790,16 @@ const PL = [
   ['maison', 'Conso. de la maison en journée (kW)', 0.1], ['prise', 'Puissance de charge sur la prise (kW)', 0.1], ['batt', 'Capacité utile de la batterie (kWh)', 0.5], ['superc', 'Prix Superchargeur si inconnu (€/kWh)', 0.01]];
 function paramsUI() {
   $('#gParams').innerHTML = PL.map(([k, l, st]) => `<div class="row"><span style="font-size:14px">${l}</span><input data-p="${k}" type="${st === 'date' ? 'date' : 'number'}" ${st !== 'date' ? 'step="' + st + '" inputmode="decimal"' : ''} value="${esc(P[k])}" style="width:${st === 'date' ? 140 : 90}px;text-align:right;background:var(--card2);color:var(--txt);border:1px solid var(--line);border-radius:10px;padding:8px;font:15px Inter,sans-serif"></div>`).join('');
-  $('#gParams').onchange = e => { const k = e.target.dataset.p; if (!k) return; P[k] = e.target.type === 'date' ? e.target.value : +String(e.target.value).replace(',', '.'); store.set('prix', P); gains(); if (typeof hwAfficher === 'function') hwAfficher(); if (['kwc', 'incl'].includes(k)) store.set('meteo', null); prevision(); };
+  $('#gParams').onchange = e => {
+    const k = e.target.dataset.p; if (!k) return;
+    if (e.target.type === 'date') P[k] = e.target.value;
+    else {
+      const txt = String(e.target.value).trim().replace(',', '.'), v = txt === '' ? NaN : +txt;
+      const ok = Number.isFinite(v) && (P_POS.includes(k) ? v > 0 : v >= 0);
+      if (!ok) { e.target.value = P[k]; toast('Valeur refusée : ' + (P_POS.includes(k) ? 'il faut un nombre supérieur à 0' : 'il faut un nombre positif') + ', ancienne valeur gardée'); return; }
+      P[k] = v;
+    }
+    store.set('prix', P); gains(); if (typeof hwAfficher === 'function') hwAfficher(); if (['kwc', 'incl'].includes(k)) store.set('meteo', null); prevision(); };
 }
 const eur = n => fr(n, n >= 1000 ? 0 : 2).replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' €';
 function bornes() {
@@ -779,9 +865,15 @@ function demoDonnees() {
   r.elec = r.solKwh * P.solaire + r.resKwh * P.reseau + r.autreEur;
   r.ess = r.km * P.conso / 100 * P.essence; return r;
 }
-let gEnCours = false;
+// Si un calcul est déjà en cours, la demande est mémorisée et relancée une fois à la fin
+let gEnCours = false, gAttente = false;
 async function gains() {
-  if (gEnCours) return; gEnCours = true;
+  if (gEnCours) { gAttente = true; return; }
+  gEnCours = true;
+  try { await gainsCalcul(); }
+  finally { gEnCours = false; if (gAttente) { gAttente = false; gains(); } }
+}
+async function gainsCalcul() {
   await hwPret;
   let r;
   try {
@@ -794,8 +886,7 @@ async function gains() {
       r = analyser(fusion(c.results, HIST.charges, a, b), fusion(d.results, HIST.drives, a, b));
     } else if (aHist()) r = analyser(dansPeriode(HIST.charges, a, b), dansPeriode(HIST.drives, a, b));
     else r = demoDonnees();
-  } catch (e) { $('#gTotal').textContent = '—'; $('#gKm').textContent = 'Données indisponibles : ' + msgErreur(e); gEnCours = false; return; }
-  gEnCours = false;
+  } catch (e) { $('#gTotal').textContent = '—'; $('#gKm').textContent = 'Données indisponibles : ' + msgErreur(e); return; }
   const gain = r.ess - r.elec;
   $('#gTotal').textContent = eur(gain);
   $('#gKm').textContent = fr(r.km, 0) + ' km parcourus' + (live() || aHist() ? '' : ' (exemple)');
@@ -837,10 +928,10 @@ async function prevision() {
   try {
     const [la, lo] = posMaison();
     let c = store.get('meteo', null);
-    if (!c || Date.now() - c.t > 30 * 60000 || Math.abs(c.la - la) > 0.05) {
-      const u = `https://api.open-meteo.com/v1/forecast?latitude=${la.toFixed(3)}&longitude=${lo.toFixed(3)}&hourly=global_tilted_irradiance,cloud_cover,temperature_2m&tilt=${P.incl}&azimuth=0&timezone=Europe%2FBrussels&forecast_days=3`;
+    if (!c || c.tz !== 'UTC' || Date.now() - c.t > 30 * 60000 || Math.abs(c.la - la) > 0.05) {
+      const u = `https://api.open-meteo.com/v1/forecast?latitude=${la.toFixed(3)}&longitude=${lo.toFixed(3)}&hourly=global_tilted_irradiance,cloud_cover,temperature_2m&tilt=${P.incl}&azimuth=0&timezone=UTC&forecast_days=3`;
       const r = await fetch(u); if (!r.ok) throw new Error('météo indisponible');
-      const d = await r.json(); c = { t: Date.now(), la, h: d.hourly }; store.set('meteo', c);
+      const d = await r.json(); c = { t: Date.now(), la, tz: 'UTC', h: d.hourly }; store.set('meteo', c);
     }
     SOL = calculerSoleil(c.h); solAfficher(); solMiniAfficher();
   } catch (e) { $('#solResume').innerHTML = '<div class="mut">Prévision indisponible : ' + esc(msgErreur(e)) + '</div>'; }
@@ -849,7 +940,7 @@ function calculerSoleil(h) {
   const jours = {};
   h.time.forEach((t, i) => {
     // valeur moyenne sur l'heure précédente : 12:00 = de 11 h à 12 h
-    const fin = new Date(t), deb = new Date(fin.getTime() - 3600000), k = cleJour(deb);
+    const fin = new Date(t + 'Z'), deb = new Date(fin.getTime() - 3600000), k = cleJour(deb); // heures Open-Meteo en UTC, puis tout en heure locale
     const prod = Math.max(0, (h.global_tilted_irradiance[i] || 0) / 1000 * P.kwc * 0.8);
     const surplus = Math.max(0, prod - P.maison);
     const bon = surplus >= P.prise * 0.6;
@@ -911,12 +1002,14 @@ let TR = null, tSel = null;
 async function tempsHoraires() {
   // températures heure par heure des 92 derniers jours à la maison (secours si Tessie ne donne pas la température)
   let c = store.get('tempsPasse', null);
-  if (c && Date.now() - c.t < 6 * 3600000) return c.m;
+  if (c && c.tz === 'UTC' && Date.now() - c.t < 6 * 3600000) return c.m;
   const [la, lo] = posMaison();
-  const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${la.toFixed(3)}&longitude=${lo.toFixed(3)}&hourly=temperature_2m&past_days=92&forecast_days=1&timezone=Europe%2FBrussels`);
+  const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${la.toFixed(3)}&longitude=${lo.toFixed(3)}&hourly=temperature_2m&past_days=92&forecast_days=1&timezone=UTC`);
+  if (!r.ok) throw new Error('météo indisponible');
   const d = await r.json(); const m = {};
-  d.hourly.time.forEach((t, i) => { m[t.slice(0, 13)] = d.hourly.temperature_2m[i]; });
-  store.set('tempsPasse', { t: Date.now(), m }); return m;
+  // heures reçues en UTC, rangées par heure locale (même clé que celle des trajets)
+  d.hourly.time.forEach((t, i) => { const x = new Date(t + 'Z'); m[cleJour(x) + 'T' + pad(x.getHours())] = d.hourly.temperature_2m[i]; });
+  store.set('tempsPasse', { t: Date.now(), tz: 'UTC', m }); return m;
 }
 function trajetsDemo() {
   const r = [];
@@ -1069,9 +1162,10 @@ function calculerStats(D) {
   return { ...r, gain: r.ess - r.elec, jours, whkm: r.km ? eDrives * 1000 / r.km : null, perteJ: D.idles.length ? tot / jIdle : null,
     senPart: tot ? sen / tot : 0, senJ: D.idles.length ? senH / jIdle : null, senKwhJ: D.idles.length ? sen / jIdle : 0 };
 }
-let accEnCours = false;
+let accEnCours = false, accAttente = false;
 async function accueilMaj() {
-  if (accEnCours) return; accEnCours = true;
+  if (accEnCours) { accAttente = true; return; }
+  accEnCours = true;
   try {
     const to = Math.floor(Date.now() / 1000), from = P.achat ? Math.floor(new Date(P.achat) / 1000) : to - 365 * 86400;
     const pD = collecter(from, to); pD.catch(() => {});
@@ -1081,6 +1175,7 @@ async function accueilMaj() {
   } catch (e) { STATS = null; $('#heroSous').textContent = 'Données indisponibles : ' + msgErreur(e); }
   accEnCours = false;
   accueilAfficher(); batterie();
+  if (accAttente) { accAttente = false; accueilMaj(); }
 }
 function accueilAfficher() {
   const s = STATS; if (!s) return;
@@ -1175,7 +1270,7 @@ function saisirPin(titre, sous, opts = {}) {
     o.innerHTML = `<div style="font-size:40px">🔒</div><h1 style="margin:10px 0 6px">${titre}</h1><div class="mut" id="pinSous" style="min-height:38px;max-width:300px">${sous}</div>
       <div id="pinPts" style="display:flex;gap:14px;margin:18px 0 26px">${'<i></i>'.repeat(6)}</div>
       <div style="display:grid;grid-template-columns:repeat(3,74px);gap:14px">${[1, 2, 3, 4, 5, 6, 7, 8, 9, opts.faceid ? 'fid' : '', 0, 'del'].map(k => k === '' ? '<span></span>' :
-        `<button data-k="${k}" style="height:74px;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--txt);font:500 ${k === 'del' || k === 'fid' ? 18 : 28}px Inter,sans-serif">${k === 'del' ? '⌫' : k === 'fid' ? '🙂<div style="font-size:10px">Face ID</div>' : k}</button>`).join('')}</div>
+        `<button data-k="${k}"${k === 'del' ? ' aria-label="Effacer le dernier chiffre"' : k === 'fid' ? ' aria-label="Déverrouiller avec Face ID"' : ''} style="height:74px;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--txt);font:500 ${k === 'del' || k === 'fid' ? 18 : 28}px Inter,sans-serif">${k === 'del' ? '⌫' : k === 'fid' ? '🙂<div style="font-size:10px">Face ID</div>' : k}</button>`).join('')}</div>
       ${opts.annuler ? '<button id="pinAnnul" class="btn sec" style="max-width:260px;margin-top:20px">Annuler</button>' : ''}`;
     const pts = () => o.querySelectorAll('#pinPts i').forEach((x, i) => x.style.cssText = `width:14px;height:14px;border-radius:50%;border:2px solid var(--mut);background:${i < v.length ? 'var(--txt)' : 'transparent'}`);
     pts();
@@ -1203,8 +1298,18 @@ async function creerPin(sous) {
   }
 }
 let TOKEN_EN_ATTENTE_OBLIGATOIRE = false;
+const ITER_PIN = 600000;
+// Verrou créé avec moins d'itérations : on le réenregistre sans bruit avec la valeur actuelle (Face ID conservé tel quel)
+async function renforcerPin(L0, token, pin) {
+  try {
+    const sel = alea(16), cle = await clePin(pin, sel, ITER_PIN);
+    const nouveau = { ...L0, v: 1, sel: b64(sel), iter: ITER_PIN, chk: await chiffrer(cle, 'ok'), pin: L0.pin ? await chiffrer(cle, emballer(token)) : L0.pin };
+    const Lc = store.get('lock', null);
+    if (Lc && Lc.sel === L0.sel) store.set('lock', nouveau); // le verrou n'a pas changé entre-temps
+  } catch (e) {}
+}
 async function enregistrer(token, pin) {
-  const sel = alea(16), iter = 310000;
+  const sel = alea(16), iter = ITER_PIN;
   const L0 = store.get('lock', {}) || {};
   const cle = await clePin(pin, sel, iter);
   const nouveau = { v: 1, sel: b64(sel), iter, chk: await chiffrer(cle, 'ok'), pin: await chiffrer(cle, emballer(token)) };
@@ -1291,16 +1396,19 @@ async function verrouiller() {
       const cle = await clePin(pin, unb64(L0.sel), L0.iter);
       await dechiffrer(cle, L0.chk);
       TOKEN = L0.pin ? deballer(await dechiffrer(cle, L0.pin)) : deballer('');
-      store.set('essais', 0); fin();
+      store.set('essais', 0);
+      if ((L0.iter || 0) < ITER_PIN) renforcerPin(L0, TOKEN, pin);
+      fin();
     } catch (e) {
       const n = essais + 1; store.set('essais', n);
-      if (n >= 10) { store.set('lock', null); store.set('token', ''); store.set('vin', ''); VIN = ''; HA_TOKEN = ''; store.set('haUrl', ''); store.set('essais', 0); fermerEcran(); toast('10 codes faux : connexion effacée par sécurité'); connexionUI(); return; }
+      if (n >= 10) { store.set('lock', null); store.set('token', ''); store.set('vin', ''); VIN = ''; HA_TOKEN = ''; store.set('haUrl', ''); store.set('essais', 0); fermerEcran(); deverrouille = true; toast('10 codes faux : connexion effacée par sécurité'); connexionUI(); majSecuUI(); haUI(); chargerHistorique(); accueilMaj(); return; }
     }
   }
 }
 function apresDeverrouillage() {
   connexionUI(); majSecuUI(); haUI(); accueilMaj(); haAuto();
-  if (live()) { toutCharger(); if (location.hash === '#gains') { gains(); pertes(); TR = null; temperature(); } }
+  if (live()) toutCharger(); else chargerHistorique();
+  if (location.hash === '#gains') { gains(); pertes(); TR = null; temperature(); }
 }
 let cache = 0;
 document.addEventListener('visibilitychange', () => {
@@ -1349,7 +1457,11 @@ function majSecuUI() {
     try { await dechiffrer(await clePin(ancien, unb64(L1.sel), L1.iter), L1.chk); } catch (e) { fermerEcran(); toast('Code incorrect'); return; }
     const n = await creerPin('Choisissez le nouveau code.');
     if (n === null) { fermerEcran(); return; }
-    await enregistrer(TOKEN, n); fermerEcran(); toast('Code changé'); majSecuUI();
+    const faceIdPerdu = !!L1.cred && !CLE_FID; // déverrouillé par le code : la clé Face ID n'est pas disponible
+    await enregistrer(TOKEN, n); fermerEcran();
+    if (faceIdPerdu) { const L2 = store.get('lock'); if (L2) { delete L2.cred; delete L2.fid; delete L2.prfSel; store.set('lock', L2); } toast('Code changé. Réactivez Face ID dans Réglages → Sécurité'); }
+    else toast('Code changé');
+    majSecuUI();
   };
 }
 
@@ -1373,12 +1485,12 @@ addEventListener('hashchange', () => { go(); if ((location.hash || '#accueil') =
 function toutAfficher() { tuiles(); etat(); clim(); lim(); batterie(); carte(); }
 function toutCharger() { charger(); chargerMeteo(); chargerHistorique(); }
 
-toutAfficher(); lieux(); connexionUI(); paramsUI(); go(); if (location.hash === '#gains') { gains(); temperature(); pertes(); }
-chargerHistorique();
-accueilMaj();
+toutAfficher(); lieux(); connexionUI(); paramsUI(); go(); if (location.hash === '#gains' && !store.get('lock', null)) { gains(); temperature(); pertes(); }
+// un verrou existe : on attend le déverrouillage avant de calculer ou d'afficher quoi que ce soit (même la démo)
+if (!store.get('lock', null)) { chargerHistorique(); accueilMaj(); }
 demarrerSecurite();
-setInterval(() => { if (live() && !document.hidden) charger(); }, 60000);
-document.addEventListener('visibilitychange', () => { if (document.hidden || !deverrouille) return; if (live()) charger(); haAuto(); });
+pollPlanifier();
+document.addEventListener('visibilitychange', () => { if (document.hidden || !deverrouille) return; if (live() && !pollStop) charger(); haAuto(); });
 
 // ---------- Mise à jour : on compare la version publiée à celle en cours ----------
 async function versionPubliee() {
@@ -1403,3 +1515,17 @@ $('#maj').onclick = async () => {
   majBouton('Vérifier les mises à jour');
 };
 $('#verApp').textContent = APP_VERSION;
+
+// ---------- Accessibilité : interrupteurs et boutons au clavier ----------
+document.querySelectorAll('.sw').forEach(el => {
+  el.setAttribute('role', 'switch'); el.tabIndex = 0;
+  const lib = el.parentElement && el.parentElement.querySelector('[style*="font-weight:600"]');
+  if (lib) el.setAttribute('aria-label', lib.textContent.trim());
+  const maj = () => el.setAttribute('aria-checked', el.classList.contains('on') ? 'true' : 'false');
+  maj(); new MutationObserver(maj).observe(el, { attributes: true, attributeFilter: ['class'] });
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const t = e.target; if (!t || !t.matches || !t.matches('.sw, [role="button"][tabindex]')) return;
+  e.preventDefault(); t.click();
+});

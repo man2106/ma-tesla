@@ -164,7 +164,7 @@ select:focus,input:focus{outline:none;border-color:var(--acc)!important}
   <div class="card">
     <div class="loc"><div><div style="font-weight:600">Climatisation</div><div class="mut" id="climEtat">Arrêtée · Intérieur 14 °C</div></div><div class="sw" id="swClim"></div></div>
     <div class="loc" style="margin-top:14px"><span class="mut">Température voulue</span>
-      <div class="stepper"><button data-t="-1">−</button><b id="temp">21,0 °C</b><button data-t="1">+</button></div></div>
+      <div class="stepper"><button data-t="-1" aria-label="Baisser la température">−</button><b id="temp">21,0 °C</b><button data-t="1" aria-label="Augmenter la température">+</button></div></div>
   </div>
 </section>
 
@@ -318,7 +318,7 @@ select:focus,input:focus{outline:none;border-color:var(--acc)!important}
   <div class="mut" style="font-size:12px;margin-top:10px;line-height:1.5">Avec un fichier HomeWizard par heure ou par quart d'heure, la part solaire de chaque recharge est calculée à partir du compteur. Sinon, la part solaire est estimée : seules les heures de recharge à domicile en pleine journée comptent (9 h–16 h, 10 h–15 h en février et octobre, 11 h–14 h de novembre à janvier). Les prix des Superchargeurs viennent de vos vraies factures.</div>
 </section>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <nav class="nav">
   <a href="#accueil" class="act" data-v="accueil"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Accueil</a>
@@ -328,6 +328,6 @@ select:focus,input:focus{outline:none;border-color:var(--acc)!important}
   <a href="#reglages" data-v="reglages"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Réglages</a>
 </nav>
 
-<script src="app.js?v=19"></script>
+<script src="app.js?v=20"></script>
 </body>
 </html>
